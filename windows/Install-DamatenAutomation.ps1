@@ -71,6 +71,7 @@ if ($SkipTasks) {
 $powerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
 $TaskWrapperDir = Join-Path $RepoPath "task_wrappers"
 New-Item -ItemType Directory -Force -Path $TaskWrapperDir | Out-Null
+$script:TaskRegistrationFailed = $false
 
 function New-DamatenTaskWrapper {
     param(
@@ -120,10 +121,24 @@ function Register-DamatenTask {
         }
         & schtasks.exe @cmd
         if ($LASTEXITCODE -ne 0) {
-            throw "schtasks.exe failed with exit code ${LASTEXITCODE} for $TaskName"
+            Write-Host "schtasks.exe failed with exit code ${LASTEXITCODE} for $TaskName"
+            $script:TaskRegistrationFailed = $true
+            return
         }
         Write-Host "Registered task via schtasks.exe: $TaskName"
     }
+}
+
+function Install-DamatenStartupSupervisor {
+    $startup = [Environment]::GetFolderPath("Startup")
+    $wrapper = Join-Path $startup "Damaten Supervisor.cmd"
+    $script = Join-Path $RepoPath "windows\Run-DamatenSupervisor.ps1"
+    $content = @"
+@echo off
+"$powerShell" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "$script" -Config "$ConfigPath"
+"@
+    Set-Content -LiteralPath $wrapper -Value $content -Encoding ASCII
+    Write-Host "Installed startup supervisor: $wrapper"
 }
 
 Register-DamatenTask `
@@ -143,9 +158,19 @@ Register-DamatenTask `
     -Schedule "DAILY" `
     -Time "12:00"
 
+if ($script:TaskRegistrationFailed) {
+    Install-DamatenStartupSupervisor
+    Write-Host ""
+    Write-Host "Task Scheduler registration was blocked by policy/permissions."
+    Write-Host "Installed a Startup-folder supervisor instead."
+    Write-Host "It runs self-play continuously and triggers push after 08:30 and pull after 12:00 once per day."
+}
+
 Write-Host ""
 Write-Host "Installed. To start immediately:"
 Write-Host "Start-ScheduledTask -TaskName 'Damaten SelfPlay Forever'"
+Write-Host "Or, if Task Scheduler was blocked:"
+Write-Host "powershell -ExecutionPolicy Bypass -File `"$RepoPath\windows\Run-DamatenSupervisor.ps1`" -Config `"$ConfigPath`""
 Write-Host ""
 Write-Host "First GitHub upload, after your git credentials are ready:"
 Write-Host "powershell -ExecutionPolicy Bypass -File `"$RepoPath\windows\Push-DamatenResults.ps1`" -Config `"$ConfigPath`""
