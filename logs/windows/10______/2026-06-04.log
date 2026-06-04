@@ -1,0 +1,8 @@
+﻿[2026-06-04 20:40:45] Damaten supervisor started
+[2026-06-04 20:40:45] scheduled push task exists=True pull task exists=True
+[2026-06-04 20:40:45] starting self-play worker
+[2026-06-04 20:40:47] start self-play forever: cycle=64 n=9 jobs=4 gamesPerCycle=100 iters=1200
+[2026-06-04 20:40:47] cycle 64 : parallel selfplay
+[2026-06-04 20:42:07] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs install
+[2026-06-04 20:42:11] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs track *.nn *.tsv *.zip
+[2026-06-04 20:42:15] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" pull --rebase --autostash origin main
