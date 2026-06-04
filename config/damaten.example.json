@@ -1,0 +1,19 @@
+{
+  "RepoPath": "C:\\Users\\USER\\Documents\\Codex\\2026-06-03\\hex-vs2022-colab-hex-visual-studio\\Damaten",
+  "Branch": "main",
+  "GitRemote": "https://github.com/Koushien552/Damaten.git",
+  "HexRoot": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab",
+  "ExePath": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\visual_studio\\x64\\Release\\HexAI.exe",
+  "RuntimeDir": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab",
+  "DataPath": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\hex_selfplay.tsv",
+  "ModelPath": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\hex_model.nn",
+  "PartsDir": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\selfplay_parts",
+  "LogPath": "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\damaten_windows.log",
+  "BoardSize": 9,
+  "Jobs": 4,
+  "GamesPerCycle": 100,
+  "Iters": 1200,
+  "MachineId": "WINDOWS-PC",
+  "MinPartAgeMinutes": 5,
+  "ModelSourceInRepo": "models/hex_model.nn"
+}

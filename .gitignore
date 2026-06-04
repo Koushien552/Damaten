@@ -1,0 +1,13 @@
+config/damaten.local.json
+runtime/
+build/
+*.exe
+*.pdb
+*.obj
+*.iobj
+*.ipdb
+*.ilk
+*.tmp
+*.download
+__pycache__/
+.ipynb_checkpoints/
