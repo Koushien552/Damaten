@@ -1,0 +1,72 @@
+﻿[2026-06-04 20:40:45] Damaten supervisor started
+[2026-06-04 20:40:45] scheduled push task exists=True pull task exists=True
+[2026-06-04 20:40:45] starting self-play worker
+[2026-06-04 20:40:47] start self-play forever: cycle=64 n=9 jobs=4 gamesPerCycle=100 iters=1200
+[2026-06-04 20:40:47] cycle 64 : parallel selfplay
+[2026-06-04 20:42:07] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs install
+[2026-06-04 20:42:11] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs track *.nn *.tsv *.zip
+[2026-06-04 20:42:15] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" pull --rebase --autostash origin main
+[2026-06-04 20:42:21] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" add .gitattributes selfplay logs manifests
+[2026-06-04 20:43:26] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" commit -m windows selfplay results 2026-06-04 10______
+[2026-06-04 20:43:31] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" push -u origin main
+[2026-06-04 20:48:07] pushed results: copied_new_parts=248
+[2026-06-04 20:48:24] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" pull --rebase --autostash origin main
+[2026-06-04 20:48:27] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs pull
+[2026-06-04 20:48:31] received trained model: C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten\models\hex_model.nn -> C:\Users\USER\Documents\Codex\2026-05-30\hex-visual-studio-2022-google-colab\hex_model.nn
+[2026-06-04 21:27:28] cycle 64 : merge local data
+[2026-06-04 21:28:51] cycle 64 : done
+[2026-06-04 21:28:51] cycle 65 : parallel selfplay
+[2026-06-04 22:14:33] cycle 65 : merge local data
+[2026-06-04 22:15:13] cycle 65 : done
+[2026-06-04 22:15:13] cycle 66 : parallel selfplay
+[2026-06-04 22:51:44] cycle 66 : merge local data
+[2026-06-04 22:52:24] cycle 66 : done
+[2026-06-04 22:52:24] cycle 67 : parallel selfplay
+[2026-06-04 23:28:33] cycle 67 : merge local data
+[2026-06-04 23:29:12] cycle 67 : done
+[2026-06-04 23:29:12] cycle 68 : parallel selfplay
+[2026-06-05 00:07:01] cycle 68 : merge local data
+[2026-06-05 00:07:59] cycle 68 : done
+[2026-06-05 00:07:59] cycle 69 : parallel selfplay
+[2026-06-05 00:43:51] cycle 69 : merge local data
+[2026-06-05 00:44:32] cycle 69 : done
+[2026-06-05 00:44:32] cycle 70 : parallel selfplay
+[2026-06-05 01:20:37] cycle 70 : merge local data
+[2026-06-05 01:21:18] cycle 70 : done
+[2026-06-05 01:21:18] cycle 71 : parallel selfplay
+[2026-06-05 01:56:20] cycle 71 : merge local data
+[2026-06-05 01:56:58] cycle 71 : done
+[2026-06-05 01:56:58] cycle 72 : parallel selfplay
+[2026-06-05 02:33:16] cycle 72 : merge local data
+[2026-06-05 02:33:57] cycle 72 : done
+[2026-06-05 02:33:57] cycle 73 : parallel selfplay
+[2026-06-05 03:11:11] cycle 73 : merge local data
+[2026-06-05 03:11:59] cycle 73 : done
+[2026-06-05 03:11:59] cycle 74 : parallel selfplay
+[2026-06-05 03:46:32] cycle 74 : merge local data
+[2026-06-05 03:47:13] cycle 74 : done
+[2026-06-05 03:47:13] cycle 75 : parallel selfplay
+[2026-06-05 04:22:55] cycle 75 : merge local data
+[2026-06-05 04:23:34] cycle 75 : done
+[2026-06-05 04:23:34] cycle 76 : parallel selfplay
+[2026-06-05 04:59:19] cycle 76 : merge local data
+[2026-06-05 04:59:58] cycle 76 : done
+[2026-06-05 04:59:58] cycle 77 : parallel selfplay
+[2026-06-05 05:35:23] cycle 77 : merge local data
+[2026-06-05 05:36:02] cycle 77 : done
+[2026-06-05 05:36:02] cycle 78 : parallel selfplay
+[2026-06-05 06:12:24] cycle 78 : merge local data
+[2026-06-05 06:13:16] cycle 78 : done
+[2026-06-05 06:13:16] cycle 79 : parallel selfplay
+[2026-06-05 06:49:11] cycle 79 : merge local data
+[2026-06-05 06:49:52] cycle 79 : done
+[2026-06-05 06:49:52] cycle 80 : parallel selfplay
+[2026-06-05 07:26:58] cycle 80 : merge local data
+[2026-06-05 07:27:37] cycle 80 : done
+[2026-06-05 07:27:37] cycle 81 : parallel selfplay
+[2026-06-05 08:03:00] cycle 81 : merge local data
+[2026-06-05 08:03:39] cycle 81 : done
+[2026-06-05 08:03:39] cycle 82 : parallel selfplay
+[2026-06-05 08:37:57] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs install
+[2026-06-05 08:38:03] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" lfs track *.nn *.tsv *.zip
+[2026-06-05 08:38:05] git -C "C:\Users\USER\Documents\Codex\2026-06-03\hex-vs2022-colab-hex-visual-studio\Damaten" pull --rebase --autostash origin main

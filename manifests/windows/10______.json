@@ -1,11 +1,11 @@
 ﻿{
     "machine":  "10______",
-    "pushed_at":  "2026-06-04T20:42:21.2628364+09:00",
+    "pushed_at":  "2026-06-05T08:38:29.2850807+09:00",
     "source_parts_dir":  "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\selfplay_parts",
-    "copied_new_parts":  248,
-    "eligible_parts":  248,
+    "copied_new_parts":  76,
+    "eligible_parts":  324,
     "data_path":  "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\hex_selfplay.tsv",
-    "data_bytes":  208577743,
+    "data_bytes":  266965592,
     "model_path":  "C:\\Users\\USER\\Documents\\Codex\\2026-05-30\\hex-visual-studio-2022-google-colab\\hex_model.nn",
     "model_bytes":  717661
 }
