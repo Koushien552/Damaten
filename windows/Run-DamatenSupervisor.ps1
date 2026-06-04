@@ -70,7 +70,16 @@ function Invoke-DamatenTimedJob {
     }
 }
 
+function Test-DamatenScheduledTaskExists {
+    param([string]$TaskName)
+    $result = & schtasks.exe /Query /TN $TaskName 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
 Write-DamatenLog $cfg "Damaten supervisor started"
+$pushTaskExists = Test-DamatenScheduledTaskExists "Damaten Push Results 0830"
+$pullTaskExists = Test-DamatenScheduledTaskExists "Damaten Pull Model 1200"
+Write-DamatenLog $cfg "scheduled push task exists=$pushTaskExists pull task exists=$pullTaskExists"
 
 try {
     while ($true) {
@@ -78,10 +87,10 @@ try {
 
         $now = Get-Date
         $minutes = $now.Hour * 60 + $now.Minute
-        if ($minutes -ge (8 * 60 + 30)) {
+        if (!$pushTaskExists -and $minutes -ge (8 * 60 + 30)) {
             Invoke-DamatenTimedJob $cfg "push results 08:30" "Push-DamatenResults.ps1" "push0830"
         }
-        if ($minutes -ge (12 * 60)) {
+        if (!$pullTaskExists -and $minutes -ge (12 * 60)) {
             Invoke-DamatenTimedJob $cfg "pull model 12:00" "Pull-DamatenModel.ps1" "pull1200"
         }
 
