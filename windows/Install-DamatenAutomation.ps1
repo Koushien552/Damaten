@@ -74,34 +74,56 @@ function Register-DamatenTask {
     param(
         [string]$TaskName,
         [string]$Script,
-        [Microsoft.Management.Infrastructure.CimInstance]$Trigger
+        [string]$Schedule,
+        [string]$Time = ""
     )
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Config `"$ConfigPath`""
     $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments
+    if ($Schedule -eq "ONLOGON") {
+        $Trigger = New-ScheduledTaskTrigger -AtLogOn
+    } else {
+        $Trigger = New-ScheduledTaskTrigger -Daily -At $Time
+    }
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
         -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew `
         -RestartCount 999 `
         -RestartInterval (New-TimeSpan -Minutes 5)
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $Trigger -Settings $settings -Force | Out-Null
-    Write-Host "Registered task: $TaskName"
+    try {
+        Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $Trigger -Settings $settings -Force | Out-Null
+        Write-Host "Registered task: $TaskName"
+    } catch {
+        Write-Host "Register-ScheduledTask failed; falling back to schtasks.exe for $TaskName"
+        $taskRun = "`"$powerShell`" $arguments"
+        $cmd = @("/Create", "/F", "/TN", $TaskName, "/TR", $taskRun, "/SC", $Schedule, "/RL", "LIMITED")
+        if ($Schedule -eq "DAILY") {
+            $cmd += @("/ST", $Time)
+        }
+        & schtasks.exe @cmd
+        if ($LASTEXITCODE -ne 0) {
+            throw "schtasks.exe failed with exit code ${LASTEXITCODE} for $TaskName"
+        }
+        Write-Host "Registered task via schtasks.exe: $TaskName"
+    }
 }
 
 Register-DamatenTask `
     -TaskName "Damaten SelfPlay Forever" `
     -Script (Join-Path $RepoPath "windows\Run-DamatenSelfPlayForever.ps1") `
-    -Trigger (New-ScheduledTaskTrigger -AtLogOn)
+    -Schedule "ONLOGON"
 
 Register-DamatenTask `
     -TaskName "Damaten Push Results 0830" `
     -Script (Join-Path $RepoPath "windows\Push-DamatenResults.ps1") `
-    -Trigger (New-ScheduledTaskTrigger -Daily -At "08:30")
+    -Schedule "DAILY" `
+    -Time "08:30"
 
 Register-DamatenTask `
     -TaskName "Damaten Pull Model 1200" `
     -Script (Join-Path $RepoPath "windows\Pull-DamatenModel.ps1") `
-    -Trigger (New-ScheduledTaskTrigger -Daily -At "12:00")
+    -Schedule "DAILY" `
+    -Time "12:00"
 
 Write-Host ""
 Write-Host "Installed. To start immediately:"
