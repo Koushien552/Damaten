@@ -80,7 +80,7 @@ function Register-DamatenTask {
     $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments
     $settings = New-ScheduledTaskSettingsSet `
         -AllowStartIfOnBatteries `
-        -DisallowStartIfOnBatteries:$false `
+        -DontStopIfGoingOnBatteries `
         -MultipleInstances IgnoreNew `
         -RestartCount 999 `
         -RestartInterval (New-TimeSpan -Minutes 5)
