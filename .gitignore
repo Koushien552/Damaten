@@ -1,6 +1,7 @@
 config/damaten.local.json
 runtime/
 build/
+task_wrappers/
 *.exe
 *.pdb
 *.obj

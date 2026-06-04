@@ -69,6 +69,23 @@ if ($SkipTasks) {
 }
 
 $powerShell = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+$TaskWrapperDir = Join-Path $RepoPath "task_wrappers"
+New-Item -ItemType Directory -Force -Path $TaskWrapperDir | Out-Null
+
+function New-DamatenTaskWrapper {
+    param(
+        [string]$TaskName,
+        [string]$Script
+    )
+    $safeName = ($TaskName -replace '[^A-Za-z0-9_.-]', '_')
+    $wrapper = Join-Path $TaskWrapperDir "$safeName.cmd"
+    $content = @"
+@echo off
+"$powerShell" -NoProfile -ExecutionPolicy Bypass -File "$Script" -Config "$ConfigPath"
+"@
+    Set-Content -LiteralPath $wrapper -Value $content -Encoding ASCII
+    return $wrapper
+}
 
 function Register-DamatenTask {
     param(
@@ -78,6 +95,7 @@ function Register-DamatenTask {
         [string]$Time = ""
     )
     $arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Script`" -Config `"$ConfigPath`""
+    $wrapper = New-DamatenTaskWrapper -TaskName $TaskName -Script $Script
     $action = New-ScheduledTaskAction -Execute $powerShell -Argument $arguments
     if ($Schedule -eq "ONLOGON") {
         $Trigger = New-ScheduledTaskTrigger -AtLogOn
@@ -95,7 +113,7 @@ function Register-DamatenTask {
         Write-Host "Registered task: $TaskName"
     } catch {
         Write-Host "Register-ScheduledTask failed; falling back to schtasks.exe for $TaskName"
-        $taskRun = "`"$powerShell`" $arguments"
+        $taskRun = "`"$wrapper`""
         $cmd = @("/Create", "/F", "/TN", $TaskName, "/TR", $taskRun, "/SC", $Schedule, "/RL", "LIMITED")
         if ($Schedule -eq "DAILY") {
             $cmd += @("/ST", $Time)
