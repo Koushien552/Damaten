@@ -80,7 +80,9 @@ def clone_or_pull(args: argparse.Namespace, token: str) -> Path:
     if (repo_dir / ".git").exists():
         run(["git", "remote", "set-url", "origin", url], cwd=repo_dir, secret=token)
         run(["git", "fetch", "origin", args.branch], cwd=repo_dir, secret=token)
-        run(["git", "checkout", args.branch], cwd=repo_dir, secret=token)
+        run(["git", "clean", "-fd"], cwd=repo_dir, secret=token)
+        run(["git", "checkout", "-B", args.branch, "FETCH_HEAD"], cwd=repo_dir, secret=token)
+        run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=repo_dir, secret=token)
         run(["git", "pull", "--rebase", "--autostash", "origin", args.branch], cwd=repo_dir, secret=token)
     else:
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
