@@ -19,6 +19,10 @@
 #include <utility>
 #include <vector>
 
+#if defined(__AVX2__)
+#include <immintrin.h>
+#endif
+
 namespace hexai {
 
 constexpr int EMPTY = 0;
@@ -69,6 +73,11 @@ struct Random {
 
     double normal(double mean, double stdev) {
         std::normal_distribution<double> dist(mean, stdev);
+        return dist(engine);
+    }
+
+    double gamma(double alpha) {
+        std::gamma_distribution<double> dist(alpha, 1.0);
         return dist(engine);
     }
 };
@@ -162,6 +171,15 @@ struct UnionFind {
     }
 
     bool connected(int a, int b) { return find(a) == find(b); }
+
+    // Non-mutating variants (no path compression) so callers that only need to
+    // test connectivity can stay const and avoid copying the whole structure.
+    int find_const(int x) const {
+        while (parent[x] != x) x = parent[x];
+        return x;
+    }
+
+    bool connected_const(int a, int b) const { return find_const(a) == find_const(b); }
 };
 
 void uf_place(const Rules& rules, UnionFind& uf, const std::vector<int>& board, int idx, int color) {
@@ -200,9 +218,8 @@ struct GameState {
     }
 
     bool has_won(int player) const {
-        UnionFind copy = uf;
-        if (player == BLACK) return copy.connected(rules->b_top, rules->b_bottom);
-        return copy.connected(rules->w_left, rules->w_right);
+        if (player == BLACK) return uf.connected_const(rules->b_top, rules->b_bottom);
+        return uf.connected_const(rules->w_left, rules->w_right);
     }
 
     bool is_terminal() const { return has_won(BLACK) || has_won(WHITE); }
@@ -314,25 +331,27 @@ std::vector<int> get_bridge_saves(const Rules& rules,
                                   int player,
                                   int last_opp) {
     if (last_opp < 0 || last_opp >= rules.nn) return {};
+
+    // The opponent's intruding stone is treated as empty when measuring the
+    // bridge it just stepped into.
     std::vector<int> before = board;
     before[last_opp] = EMPTY;
 
-    std::vector<int> stones;
-    stones.reserve(rules.nn);
-    for (int i = 0; i < rules.nn; ++i) {
-        if (before[i] == player) stones.push_back(i);
+    // A bridge carrier threatened by last_opp must have both of its endpoints
+    // adjacent to last_opp, so only the player's stones next to it can matter.
+    std::array<int, 6> cand{};
+    int cand_n = 0;
+    for (int k = 0; k < rules.nbr_count[last_opp]; ++k) {
+        int nb = rules.nbrs[last_opp][k];
+        if (board[nb] == player) cand[cand_n++] = nb;
     }
 
     std::vector<int> mark(rules.nn, 0);
-    for (std::size_t ia = 0; ia < stones.size(); ++ia) {
-        int a = stones[ia];
-        std::set<int> empty_a;
-        for (int k = 0; k < rules.nbr_count[a]; ++k) {
-            int nb = rules.nbrs[a][k];
-            if (before[nb] == EMPTY) empty_a.insert(nb);
-        }
-        for (std::size_t ib = ia + 1; ib < stones.size(); ++ib) {
-            int b = stones[ib];
+    for (int ia = 0; ia < cand_n; ++ia) {
+        int a = cand[ia];
+        for (int ib = ia + 1; ib < cand_n; ++ib) {
+            int b = cand[ib];
+
             bool adjacent = false;
             for (int k = 0; k < rules.nbr_count[a]; ++k) {
                 if (rules.nbrs[a][k] == b) {
@@ -342,15 +361,26 @@ std::vector<int> get_bridge_saves(const Rules& rules,
             }
             if (adjacent) continue;
 
-            std::vector<int> common;
-            for (int k = 0; k < rules.nbr_count[b]; ++k) {
-                int nb = rules.nbrs[b][k];
-                if (before[nb] == EMPTY && empty_a.count(nb)) common.push_back(nb);
+            std::array<int, 6> commons{};
+            int cn = 0;
+            bool has_last = false;
+            for (int ka = 0; ka < rules.nbr_count[a]; ++ka) {
+                int na = rules.nbrs[a][ka];
+                if (before[na] != EMPTY) continue;
+                bool shared = false;
+                for (int kb = 0; kb < rules.nbr_count[b]; ++kb) {
+                    if (rules.nbrs[b][kb] == na) {
+                        shared = true;
+                        break;
+                    }
+                }
+                if (!shared) continue;
+                if (na == last_opp) has_last = true;
+                if (cn < 6) commons[cn++] = na;
             }
-            if (common.size() < 2) continue;
-            bool threatened = std::find(common.begin(), common.end(), last_opp) != common.end();
-            if (!threatened) continue;
-            for (int x : common) {
+            if (cn < 2 || !has_last) continue;
+            for (int t = 0; t < cn; ++t) {
+                int x = commons[t];
                 if (x != last_opp && board[x] == EMPTY) mark[x] = 1;
             }
         }
@@ -542,7 +572,22 @@ struct NetForward {
     double value = 0.0;
 };
 
-struct TinyNet {
+// Result of a single network evaluation, shared by every model type.
+struct Eval {
+    std::vector<double> logits;  // raw policy logits over all nn cells
+    double value = 0.0;          // tanh value from the current player's view
+};
+
+// Common interface so the search can use either the small MLP (TinyNet) or the
+// convolutional residual network (ConvNet) interchangeably.
+struct NeuralNet {
+    virtual ~NeuralNet() = default;
+    virtual bool is_ready() const = 0;
+    virtual int board_n() const = 0;
+    virtual Eval evaluate(const std::vector<int>& board, int player) const = 0;
+};
+
+struct TinyNet : NeuralNet {
     int n = 0;
     int nn = 0;
     int input = 0;
@@ -638,6 +683,16 @@ struct TinyNet {
 
     NetForward infer(const std::vector<int>& board, int player) const {
         return forward_raw(make_features(board, player));
+    }
+
+    bool is_ready() const override { return ready; }
+    int board_n() const override { return n; }
+    Eval evaluate(const std::vector<int>& board, int player) const override {
+        NetForward f = infer(board, player);
+        Eval e;
+        e.logits = std::move(f.logits);
+        e.value = f.value;
+        return e;
     }
 
     bool save(const std::string& path) const {
@@ -749,6 +804,335 @@ struct TinyNet {
         }
 
         return policy_loss + value_weight * value_loss;
+    }
+};
+
+// Convolutional residual network (AlphaZero-style) for Hex. Inference only on
+// the C++ side; training happens in PyTorch (Colab) which exports the HEXCNN_V1
+// format read here. No BatchNorm: residual blocks are plain conv+ReLU so the
+// C++ forward pass stays simple and the exported weights need no folding.
+//
+// Layout (matches PyTorch default tensor ordering):
+//   input planes [0]=my stones, [1]=opp stones, [2]=color (1 if Black to move)
+//   trunk:  conv3x3(in_planes->C) + ReLU
+//   B blocks: y = ReLU(x + conv3x3(ReLU(conv3x3(x))))
+//   policy: conv1x1(C->2)+ReLU -> flatten(2*nn) -> FC(2*nn->nn)
+//   value:  conv1x1(C->1)+ReLU -> flatten(nn) -> FC(nn->H)+ReLU -> FC(H->1)+tanh
+struct ConvNet : NeuralNet {
+    int n = 0, nn = 0;
+    int C = 32, B = 4;
+    int in_planes = 3, val_hidden = 64;
+    bool ok = false;
+
+    std::vector<float> w_in, b_in;                        // [C*in_planes*9], [C]
+    std::vector<std::vector<float>> w1, bb1, w2, bb2;     // per block
+    std::vector<float> w_ph, b_ph;                        // [2*C], [2]
+    std::vector<float> w_pf, b_pf;                        // [nn*(2*nn)], [nn]
+    std::vector<float> w_vh, b_vh;                        // [C], [1]
+    std::vector<float> w_vf1, b_vf1;                      // [val_hidden*nn], [val_hidden]
+    std::vector<float> w_vf2;                             // [val_hidden]
+    float b_vf2 = 0.0f;
+
+    bool is_ready() const override { return ok; }
+    int board_n() const override { return n; }
+
+    void make_planes(const std::vector<int>& board, int player, std::vector<float>& planes) const {
+        planes.assign(in_planes * nn, 0.0f);
+        int opp = other_player(player);
+        for (int i = 0; i < nn; ++i) {
+            if (board[i] == player) planes[i] = 1.0f;
+            else if (board[i] == opp) planes[nn + i] = 1.0f;
+        }
+        float color = (player == BLACK) ? 1.0f : 0.0f;
+        for (int i = 0; i < nn; ++i) planes[2 * nn + i] = color;
+    }
+
+    // 3x3 conv with zero padding 1. in:[in_ch*nn] out:[out_ch*nn]
+    // w:[out_ch*in_ch*9] (oc,ic,kr,kc) row-major, b:[out_ch].
+    // 3x3 conv, zero pad 1, implemented as im2col + GEMM. The weight layout
+    // w[(oc*in_ch+ic)*9 + k] equals a [out_ch, in_ch*9] matrix, so the output
+    // is W * cols where cols[(ic*9+k), cell] gathers the padded inputs. The
+    // inner loop accumulates over contiguous cells (an element-wise AXPY, not a
+    // reduction), so it vectorises cleanly under /arch:AVX2 with /fp:precise and
+    // stays numerically equivalent to the scalar version up to FP rounding.
+    void conv3x3(const std::vector<float>& in, int in_ch, int out_ch,
+                 const std::vector<float>& w, const std::vector<float>& b,
+                 std::vector<float>& out, bool relu) const {
+        const int KS = in_ch * 9;
+        thread_local std::vector<float> cols;
+        cols.assign(static_cast<std::size_t>(KS) * nn, 0.0f);
+
+        // im2col: scatter each (input-channel, kernel-tap) into its own row.
+        for (int ic = 0; ic < in_ch; ++ic) {
+            const float* inp = &in[static_cast<std::size_t>(ic) * nn];
+            for (int kr = 0; kr < 3; ++kr) {
+                int dr = kr - 1;
+                for (int kc = 0; kc < 3; ++kc) {
+                    int dc = kc - 1;
+                    float* dst = &cols[static_cast<std::size_t>(ic * 9 + kr * 3 + kc) * nn];
+                    for (int r = 0; r < n; ++r) {
+                        int rr = r + dr;
+                        if (rr < 0 || rr >= n) continue;
+                        for (int c = 0; c < n; ++c) {
+                            int cc = c + dc;
+                            if (cc < 0 || cc >= n) continue;
+                            dst[r * n + c] = inp[rr * n + cc];
+                        }
+                    }
+                }
+            }
+        }
+
+        out.assign(static_cast<std::size_t>(out_ch) * nn, 0.0f);
+#if defined(__AVX2__)
+        // AVX2 micro-kernel: output channels blocked 4 at a time, cells tiled by
+        // 8 (one __m256). The 4 accumulators stay in registers across the whole
+        // r loop, so each cols tile is loaded once and reused for 4 channels.
+        // Uses FMA, so results differ from the scalar path only by FP rounding.
+        {
+            const __m256 zero = _mm256_setzero_ps();
+            int oc = 0;
+            for (; oc + 4 <= out_ch; oc += 4) {
+                const float* wr0 = &w[static_cast<std::size_t>(oc + 0) * KS];
+                const float* wr1 = &w[static_cast<std::size_t>(oc + 1) * KS];
+                const float* wr2 = &w[static_cast<std::size_t>(oc + 2) * KS];
+                const float* wr3 = &w[static_cast<std::size_t>(oc + 3) * KS];
+                float* o0 = &out[static_cast<std::size_t>(oc + 0) * nn];
+                float* o1 = &out[static_cast<std::size_t>(oc + 1) * nn];
+                float* o2 = &out[static_cast<std::size_t>(oc + 2) * nn];
+                float* o3 = &out[static_cast<std::size_t>(oc + 3) * nn];
+                int cell = 0;
+                for (; cell + 8 <= nn; cell += 8) {
+                    __m256 a0 = _mm256_set1_ps(b[oc + 0]);
+                    __m256 a1 = _mm256_set1_ps(b[oc + 1]);
+                    __m256 a2 = _mm256_set1_ps(b[oc + 2]);
+                    __m256 a3 = _mm256_set1_ps(b[oc + 3]);
+                    for (int r = 0; r < KS; ++r) {
+                        __m256 cv = _mm256_loadu_ps(&cols[static_cast<std::size_t>(r) * nn + cell]);
+                        a0 = _mm256_fmadd_ps(_mm256_set1_ps(wr0[r]), cv, a0);
+                        a1 = _mm256_fmadd_ps(_mm256_set1_ps(wr1[r]), cv, a1);
+                        a2 = _mm256_fmadd_ps(_mm256_set1_ps(wr2[r]), cv, a2);
+                        a3 = _mm256_fmadd_ps(_mm256_set1_ps(wr3[r]), cv, a3);
+                    }
+                    if (relu) {
+                        a0 = _mm256_max_ps(a0, zero); a1 = _mm256_max_ps(a1, zero);
+                        a2 = _mm256_max_ps(a2, zero); a3 = _mm256_max_ps(a3, zero);
+                    }
+                    _mm256_storeu_ps(&o0[cell], a0); _mm256_storeu_ps(&o1[cell], a1);
+                    _mm256_storeu_ps(&o2[cell], a2); _mm256_storeu_ps(&o3[cell], a3);
+                }
+                for (; cell < nn; ++cell) {
+                    float s0 = b[oc + 0], s1 = b[oc + 1], s2 = b[oc + 2], s3 = b[oc + 3];
+                    for (int r = 0; r < KS; ++r) {
+                        float cv = cols[static_cast<std::size_t>(r) * nn + cell];
+                        s0 += wr0[r] * cv; s1 += wr1[r] * cv; s2 += wr2[r] * cv; s3 += wr3[r] * cv;
+                    }
+                    if (relu) { s0 = s0 < 0 ? 0 : s0; s1 = s1 < 0 ? 0 : s1; s2 = s2 < 0 ? 0 : s2; s3 = s3 < 0 ? 0 : s3; }
+                    o0[cell] = s0; o1[cell] = s1; o2[cell] = s2; o3[cell] = s3;
+                }
+            }
+            for (; oc < out_ch; ++oc) {
+                const float* wrow = &w[static_cast<std::size_t>(oc) * KS];
+                float* o = &out[static_cast<std::size_t>(oc) * nn];
+                int cell = 0;
+                for (; cell + 8 <= nn; cell += 8) {
+                    __m256 a = _mm256_set1_ps(b[oc]);
+                    for (int r = 0; r < KS; ++r)
+                        a = _mm256_fmadd_ps(_mm256_set1_ps(wrow[r]),
+                                            _mm256_loadu_ps(&cols[static_cast<std::size_t>(r) * nn + cell]), a);
+                    if (relu) a = _mm256_max_ps(a, zero);
+                    _mm256_storeu_ps(&o[cell], a);
+                }
+                for (; cell < nn; ++cell) {
+                    float s = b[oc];
+                    for (int r = 0; r < KS; ++r) s += wrow[r] * cols[static_cast<std::size_t>(r) * nn + cell];
+                    if (relu && s < 0.0f) s = 0.0f;
+                    o[cell] = s;
+                }
+            }
+        }
+#else
+        // Scalar fallback (also used for non-AVX2 builds). Output channels are
+        // blocked 4 at a time so each cols row is reused across 4 weights.
+        int oc = 0;
+        for (; oc + 4 <= out_ch; oc += 4) {
+            float* __restrict o0 = &out[static_cast<std::size_t>(oc + 0) * nn];
+            float* __restrict o1 = &out[static_cast<std::size_t>(oc + 1) * nn];
+            float* __restrict o2 = &out[static_cast<std::size_t>(oc + 2) * nn];
+            float* __restrict o3 = &out[static_cast<std::size_t>(oc + 3) * nn];
+            const float* wr0 = &w[static_cast<std::size_t>(oc + 0) * KS];
+            const float* wr1 = &w[static_cast<std::size_t>(oc + 1) * KS];
+            const float* wr2 = &w[static_cast<std::size_t>(oc + 2) * KS];
+            const float* wr3 = &w[static_cast<std::size_t>(oc + 3) * KS];
+            for (int cell = 0; cell < nn; ++cell) {
+                o0[cell] = b[oc + 0]; o1[cell] = b[oc + 1];
+                o2[cell] = b[oc + 2]; o3[cell] = b[oc + 3];
+            }
+            for (int r = 0; r < KS; ++r) {
+                const float* __restrict col = &cols[static_cast<std::size_t>(r) * nn];
+                const float wv0 = wr0[r], wv1 = wr1[r], wv2 = wr2[r], wv3 = wr3[r];
+                for (int cell = 0; cell < nn; ++cell) {
+                    const float cv = col[cell];
+                    o0[cell] += wv0 * cv; o1[cell] += wv1 * cv;
+                    o2[cell] += wv2 * cv; o3[cell] += wv3 * cv;
+                }
+            }
+            if (relu) {
+                for (int j = 0; j < 4; ++j) {
+                    float* o = &out[static_cast<std::size_t>(oc + j) * nn];
+                    for (int cell = 0; cell < nn; ++cell) if (o[cell] < 0.0f) o[cell] = 0.0f;
+                }
+            }
+        }
+        for (; oc < out_ch; ++oc) {
+            float* __restrict o = &out[static_cast<std::size_t>(oc) * nn];
+            const float* wrow = &w[static_cast<std::size_t>(oc) * KS];
+            for (int cell = 0; cell < nn; ++cell) o[cell] = b[oc];
+            for (int r = 0; r < KS; ++r) {
+                const float wv = wrow[r];
+                const float* __restrict col = &cols[static_cast<std::size_t>(r) * nn];
+                for (int cell = 0; cell < nn; ++cell) o[cell] += wv * col[cell];
+            }
+            if (relu) {
+                for (int cell = 0; cell < nn; ++cell) if (o[cell] < 0.0f) o[cell] = 0.0f;
+            }
+        }
+#endif
+    }
+
+    // 1x1 conv: out[oc*nn+cell] = b[oc] + sum_ic w[oc*in_ch+ic]*in[ic*nn+cell]
+    void conv1x1(const std::vector<float>& in, int in_ch, int out_ch,
+                 const std::vector<float>& w, const std::vector<float>& b,
+                 std::vector<float>& out, bool relu) const {
+        out.assign(out_ch * nn, 0.0f);
+        for (int oc = 0; oc < out_ch; ++oc) {
+            for (int cell = 0; cell < nn; ++cell) {
+                float acc = b[oc];
+                for (int ic = 0; ic < in_ch; ++ic) acc += w[oc * in_ch + ic] * in[ic * nn + cell];
+                if (relu && acc < 0.0f) acc = 0.0f;
+                out[oc * nn + cell] = acc;
+            }
+        }
+    }
+
+    Eval evaluate(const std::vector<int>& board, int player) const override {
+        Eval e;
+        e.logits.assign(nn, 0.0);
+
+        std::vector<float> planes;
+        make_planes(board, player, planes);
+
+        std::vector<float> trunk;
+        conv3x3(planes, in_planes, C, w_in, b_in, trunk, true);
+
+        std::vector<float> h, h2;
+        for (int blk = 0; blk < B; ++blk) {
+            conv3x3(trunk, C, C, w1[blk], bb1[blk], h, true);
+            conv3x3(h, C, C, w2[blk], bb2[blk], h2, false);
+            for (int i = 0; i < C * nn; ++i) {
+                float v = trunk[i] + h2[i];
+                trunk[i] = v < 0.0f ? 0.0f : v;
+            }
+        }
+
+        // policy head
+        std::vector<float> p2;
+        conv1x1(trunk, C, 2, w_ph, b_ph, p2, true);  // [2*nn]
+        for (int i = 0; i < nn; ++i) {
+            float acc = b_pf[i];
+            const float* wr = &w_pf[static_cast<std::size_t>(i) * (2 * nn)];
+            for (int k = 0; k < 2 * nn; ++k) acc += wr[k] * p2[k];
+            e.logits[i] = acc;
+        }
+
+        // value head
+        std::vector<float> v1;
+        conv1x1(trunk, C, 1, w_vh, b_vh, v1, true);  // [nn]
+        std::vector<float> vh(val_hidden, 0.0f);
+        for (int j = 0; j < val_hidden; ++j) {
+            float acc = b_vf1[j];
+            const float* wr = &w_vf1[static_cast<std::size_t>(j) * nn];
+            for (int k = 0; k < nn; ++k) acc += wr[k] * v1[k];
+            vh[j] = acc < 0.0f ? 0.0f : acc;
+        }
+        float vraw = b_vf2;
+        for (int j = 0; j < val_hidden; ++j) vraw += w_vf2[j] * vh[j];
+        e.value = std::tanh(vraw);
+        return e;
+    }
+
+    void init(int board_size, int channels, int blocks, uint64_t seed) {
+        n = board_size;
+        nn = n * n;
+        C = channels;
+        B = blocks;
+        in_planes = 3;
+        val_hidden = 64;
+        Random rr(seed);
+        auto fill = [&](std::vector<float>& v, std::size_t size, double scale) {
+            v.assign(size, 0.0f);
+            for (auto& x : v) x = static_cast<float>(rr.normal(0.0, scale));
+        };
+        auto zeros = [&](std::vector<float>& v, std::size_t size) { v.assign(size, 0.0f); };
+        fill(w_in, static_cast<std::size_t>(C) * in_planes * 9, std::sqrt(2.0 / (in_planes * 9)));
+        zeros(b_in, C);
+        w1.assign(B, {}); bb1.assign(B, {}); w2.assign(B, {}); bb2.assign(B, {});
+        double s_c = std::sqrt(2.0 / (C * 9));
+        for (int blk = 0; blk < B; ++blk) {
+            fill(w1[blk], static_cast<std::size_t>(C) * C * 9, s_c); zeros(bb1[blk], C);
+            fill(w2[blk], static_cast<std::size_t>(C) * C * 9, s_c); zeros(bb2[blk], C);
+        }
+        fill(w_ph, static_cast<std::size_t>(2) * C, std::sqrt(2.0 / C)); zeros(b_ph, 2);
+        fill(w_pf, static_cast<std::size_t>(nn) * (2 * nn), std::sqrt(2.0 / (2 * nn))); zeros(b_pf, nn);
+        fill(w_vh, C, std::sqrt(2.0 / C)); zeros(b_vh, 1);
+        fill(w_vf1, static_cast<std::size_t>(val_hidden) * nn, std::sqrt(2.0 / nn)); zeros(b_vf1, val_hidden);
+        fill(w_vf2, val_hidden, std::sqrt(2.0 / val_hidden)); b_vf2 = 0.0f;
+        ok = true;
+    }
+
+    bool save(const std::string& path) const {
+        std::ofstream out(path);
+        if (!out) return false;
+        out << "HEXCNN_V1 " << n << ' ' << C << ' ' << B << ' ' << in_planes << ' ' << val_hidden << "\n";
+        out << std::setprecision(9);
+        auto wv = [&](const std::vector<float>& v) {
+            out << v.size();
+            for (float x : v) out << ' ' << x;
+            out << "\n";
+        };
+        wv(w_in); wv(b_in);
+        for (int blk = 0; blk < B; ++blk) { wv(w1[blk]); wv(bb1[blk]); wv(w2[blk]); wv(bb2[blk]); }
+        wv(w_ph); wv(b_ph); wv(w_pf); wv(b_pf);
+        wv(w_vh); wv(b_vh); wv(w_vf1); wv(b_vf1); wv(w_vf2);
+        out << b_vf2 << "\n";
+        return true;
+    }
+
+    bool load(const std::string& path) {
+        std::ifstream in(path);
+        if (!in) return false;
+        std::string tag;
+        in >> tag;
+        if (tag != "HEXCNN_V1") return false;
+        in >> n >> C >> B >> in_planes >> val_hidden;
+        nn = n * n;
+        auto rv = [&](std::vector<float>& v) {
+            std::size_t s = 0;
+            in >> s;
+            v.assign(s, 0.0f);
+            for (auto& x : v) { double d = 0.0; in >> d; x = static_cast<float>(d); }
+        };
+        rv(w_in); rv(b_in);
+        w1.assign(B, {}); bb1.assign(B, {}); w2.assign(B, {}); bb2.assign(B, {});
+        for (int blk = 0; blk < B; ++blk) { rv(w1[blk]); rv(bb1[blk]); rv(w2[blk]); rv(bb2[blk]); }
+        rv(w_ph); rv(b_ph); rv(w_pf); rv(b_pf);
+        rv(w_vh); rv(b_vh); rv(w_vf1); rv(b_vf1); rv(w_vf2);
+        double d = 0.0; in >> d; b_vf2 = static_cast<float>(d);
+        ok = static_cast<int>(w_in.size()) == C * in_planes * 9 &&
+             static_cast<std::size_t>(w_pf.size()) == static_cast<std::size_t>(nn) * (2 * nn) &&
+             static_cast<std::size_t>(w_vf1.size()) == static_cast<std::size_t>(val_hidden) * nn &&
+             static_cast<int>(w_vf2.size()) == val_hidden;
+        return ok;
     }
 };
 
@@ -868,9 +1252,25 @@ std::vector<double> heuristic_priors(const GameState& gs) {
     return priors;
 }
 
-std::vector<double> network_or_heuristic_priors(const GameState& gs, const TinyNet* net) {
-    if (!net || !net->ready || net->n != gs.rules->n) return heuristic_priors(gs);
-    NetForward f = net->infer(gs.board, gs.cur);
+// One network evaluation per node. Both the move priors and the node's value
+// are derived from a single forward pass. Previously a node ran the (identical)
+// inference twice: once in the node constructor for the priors and again in the
+// leaf evaluation for the value. The result is byte-for-byte identical because
+// the network is deterministic and consumes no RNG.
+struct NodeEval {
+    std::vector<double> priors;
+    double net_black = 0.5;  // P(Black wins) from the network, if available
+    bool has_net = false;
+};
+
+NodeEval eval_node(const GameState& gs, const NeuralNet* net) {
+    NodeEval e;
+    if (!net || !net->is_ready() || net->board_n() != gs.rules->n) {
+        e.priors = heuristic_priors(gs);
+        return e;
+    }
+    Eval f = net->evaluate(gs.board, gs.cur);
+
     std::vector<double> priors(gs.rules->nn, 0.0);
     double max_logit = -std::numeric_limits<double>::infinity();
     for (int i = 0; i < gs.rules->nn; ++i) {
@@ -882,9 +1282,17 @@ std::vector<double> network_or_heuristic_priors(const GameState& gs, const TinyN
         priors[i] = std::exp(f.logits[i] - max_logit);
         sum += priors[i];
     }
-    if (sum <= 0.0 || !std::isfinite(sum)) return heuristic_priors(gs);
-    for (double& p : priors) p /= sum;
-    return priors;
+    if (sum <= 0.0 || !std::isfinite(sum)) {
+        e.priors = heuristic_priors(gs);
+    } else {
+        for (double& p : priors) p /= sum;
+        e.priors = std::move(priors);
+    }
+
+    double current_win_prob = (f.value + 1.0) * 0.5;
+    e.net_black = gs.cur == BLACK ? current_win_prob : (1.0 - current_win_prob);
+    e.has_net = true;
+    return e;
 }
 
 struct SearchConfig {
@@ -893,6 +1301,13 @@ struct SearchConfig {
     double exploration = 1.15;
     double rollout_weight = 0.45;
     bool use_rollout = true;
+    // Self-play exploration: Dirichlet noise mixed into the root priors.
+    bool add_root_noise = false;
+    double dirichlet_alpha = 0.3;
+    double dirichlet_epsilon = 0.25;
+    // First-play urgency: optimism applied to not-yet-expanded moves so PUCT
+    // can lean on the policy network instead of expanding every sibling first.
+    double fpu_reduction = 0.25;
 };
 
 struct SearchResult {
@@ -911,47 +1326,30 @@ struct MCTSNode {
     double black_wins = 0.0;
     int move = -1;
     double prior_from_parent = 1.0;
+    double cached_net_black = 0.5;  // network value cached from construction
+    bool has_cached_net = false;
 
-    MCTSNode(const GameState& state, MCTSNode* par, int mv, double prior, const TinyNet* net)
-        : st(state), parent(par), priors(network_or_heuristic_priors(state, net)), move(mv), prior_from_parent(prior) {
+    MCTSNode(const GameState& state, MCTSNode* par, int mv, double prior, const NeuralNet* net)
+        : st(state), parent(par), move(mv), prior_from_parent(prior) {
+        NodeEval e = eval_node(st, net);
+        priors = std::move(e.priors);
+        cached_net_black = e.net_black;
+        has_cached_net = e.has_net;
         untried = legal_moves(st);
     }
 
-    double child_score(const MCTSNode& child, double exploration) const {
-        double q = 0.5;
-        if (child.visits > 0) {
-            double black_q = child.black_wins / child.visits;
-            q = st.cur == BLACK ? black_q : (1.0 - black_q);
-        }
-        double u = exploration * child.prior_from_parent * std::sqrt(static_cast<double>(visits + 1)) / (1.0 + child.visits);
-        return q + u;
-    }
-
-    MCTSNode* best_child(double exploration) {
-        return std::max_element(children.begin(), children.end(), [&](const auto& a, const auto& b) {
-            return child_score(*a, exploration) < child_score(*b, exploration);
-        })->get();
-    }
-
-    int pop_best_untried() {
-        int best_pos = -1;
-        double best_prior = -1.0;
-        for (int i = 0; i < static_cast<int>(untried.size()); ++i) {
-            int m = untried[i];
-            if (priors[m] > best_prior) {
-                best_prior = priors[m];
-                best_pos = i;
-            }
-        }
-        if (best_pos < 0) return -1;
-        int move_out = untried[best_pos];
-        untried[best_pos] = untried.back();
-        untried.pop_back();
-        return move_out;
+    // Win probability at this node from the perspective of the side to move.
+    double value_for_cur() const {
+        if (visits <= 0) return 0.5;
+        double black_q = black_wins / visits;
+        return st.cur == BLACK ? black_q : (1.0 - black_q);
     }
 };
 
-double evaluate_leaf_black_win(const GameState& st, const TinyNet* net, const SearchConfig& config) {
+// Leaf value from Black's perspective. The network term reuses the value that
+// was already computed (and cached on the node) during expansion, so no second
+// forward pass is needed.
+double evaluate_leaf_black_win(const GameState& st, double cached_net_black, bool has_net, const SearchConfig& config) {
     if (st.has_won(BLACK)) return 1.0;
     if (st.has_won(WHITE)) return 0.0;
 
@@ -961,16 +1359,35 @@ double evaluate_leaf_black_win(const GameState& st, const TinyNet* net, const Se
         double rollout = rollout_light(st);
         value = (1.0 - config.rollout_weight) * heuristic + config.rollout_weight * rollout;
     }
-    if (net && net->ready && net->n == st.rules->n) {
-        NetForward f = net->infer(st.board, st.cur);
-        double current_win_prob = (f.value + 1.0) * 0.5;
-        double net_black = st.cur == BLACK ? current_win_prob : (1.0 - current_win_prob);
-        value = 0.50 * net_black + 0.30 * value + 0.20 * heuristic;
+    if (has_net) {
+        value = 0.50 * cached_net_black + 0.30 * value + 0.20 * heuristic;
     }
     return std::max(0.0, std::min(1.0, value));
 }
 
-SearchResult mcts_search(const GameState& root_state, const SearchConfig& config, const TinyNet* net) {
+// Mix Dirichlet noise into the priors of the given moves (root exploration).
+void add_dirichlet_noise(std::vector<double>& priors,
+                         const std::vector<int>& moves,
+                         double alpha,
+                         double eps) {
+    if (moves.empty() || eps <= 0.0) return;
+    std::vector<double> noise(moves.size(), 0.0);
+    double sum = 0.0;
+    for (std::size_t i = 0; i < moves.size(); ++i) {
+        double g = g_rng.gamma(alpha);
+        if (!(g > 0.0)) g = 1e-9;
+        noise[i] = g;
+        sum += g;
+    }
+    if (sum <= 0.0) return;
+    for (std::size_t i = 0; i < moves.size(); ++i) {
+        double nz = noise[i] / sum;
+        int m = moves[i];
+        priors[m] = (1.0 - eps) * priors[m] + eps * nz;
+    }
+}
+
+SearchResult mcts_search(const GameState& root_state, const SearchConfig& config, const NeuralNet* net) {
     SearchResult result;
     result.visits.assign(root_state.rules->nn, 0);
 
@@ -991,27 +1408,80 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
 
     MCTSNode root(root_state, nullptr, -1, 1.0, net);
     if (root.untried.empty()) return result;
+    if (config.add_root_noise) {
+        add_dirichlet_noise(root.priors, root.untried, config.dirichlet_alpha, config.dirichlet_epsilon);
+    }
 
     for (int iter = 0; iter < config.iterations; ++iter) {
         MCTSNode* node = &root;
         std::vector<MCTSNode*> path;
         path.push_back(node);
 
-        while (node->untried.empty() && !node->children.empty() && !node->st.is_terminal()) {
-            node = node->best_child(config.exploration);
+        // Selection: at each node compare the best already-expanded child
+        // against the best not-yet-expanded move (using first-play urgency),
+        // so promising lines can be deepened without first expanding every
+        // sibling. With a trained policy the priors are sharp enough that this
+        // focuses the limited simulation budget on strong moves.
+        while (!node->st.is_terminal()) {
+            double sqrt_n = std::sqrt(static_cast<double>(std::max(1, node->visits)));
+            double fpu = std::max(0.0, std::min(1.0, node->value_for_cur() - config.fpu_reduction));
+
+            int best_untried = -1;
+            double best_untried_score = -std::numeric_limits<double>::infinity();
+            for (int m : node->untried) {
+                double prior = node->priors[m];
+                double score = fpu + config.exploration * prior * sqrt_n;
+                if (score > best_untried_score) {
+                    best_untried_score = score;
+                    best_untried = m;
+                }
+            }
+
+            MCTSNode* best_child = nullptr;
+            double best_child_score = -std::numeric_limits<double>::infinity();
+            for (const auto& child : node->children) {
+                double q = fpu;
+                if (child->visits > 0) {
+                    double black_q = child->black_wins / child->visits;
+                    q = node->st.cur == BLACK ? black_q : (1.0 - black_q);
+                }
+                double u = config.exploration * child->prior_from_parent * sqrt_n / (1.0 + child->visits);
+                double score = q + u;
+                if (score > best_child_score) {
+                    best_child_score = score;
+                    best_child = child.get();
+                }
+            }
+
+            bool expand;
+            if (!best_child) {
+                expand = best_untried >= 0;
+            } else if (best_untried < 0) {
+                expand = false;
+            } else {
+                expand = best_untried_score >= best_child_score;
+            }
+
+            if (expand) {
+                int m = best_untried;
+                auto it = std::find(node->untried.begin(), node->untried.end(), m);
+                if (it != node->untried.end()) {
+                    *it = node->untried.back();
+                    node->untried.pop_back();
+                }
+                GameState ns = node->st.apply(m);
+                double prior = node->priors[m] > 0.0 ? node->priors[m] : 1.0 / std::max(1, node->st.empty_count());
+                node->children.push_back(std::make_unique<MCTSNode>(ns, node, m, prior, net));
+                node = node->children.back().get();
+                path.push_back(node);
+                break;  // newly expanded leaf is evaluated below
+            }
+
+            node = best_child;
             path.push_back(node);
         }
 
-        if (!node->st.is_terminal() && !node->untried.empty()) {
-            int m = node->pop_best_untried();
-            GameState ns = node->st.apply(m);
-            double prior = node->priors[m] > 0.0 ? node->priors[m] : 1.0 / std::max(1, node->st.empty_count());
-            node->children.push_back(std::make_unique<MCTSNode>(ns, node, m, prior, net));
-            node = node->children.back().get();
-            path.push_back(node);
-        }
-
-        double black_win = evaluate_leaf_black_win(node->st, net, config);
+        double black_win = evaluate_leaf_black_win(node->st, node->cached_net_black, node->has_cached_net, config);
         for (MCTSNode* p : path) {
             ++p->visits;
             p->black_wins += black_win;
@@ -1033,7 +1503,7 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
     return result;
 }
 
-SearchResult search_position(const GameState& gs, const SearchConfig& config, const TinyNet* net) {
+SearchResult search_position(const GameState& gs, const SearchConfig& config, const NeuralNet* net) {
     if (config.endgame_depth > 0 && gs.empty_count() <= config.endgame_depth) {
         SearchResult result;
         result.visits.assign(gs.rules->nn, 0);
@@ -1129,20 +1599,47 @@ std::string get_string(const Args& args, const std::string& key, const std::stri
 
 SearchConfig config_from_args(const Args& args, int n) {
     SearchConfig cfg;
-    cfg.iterations = get_int(args, "iters", n <= 7 ? 2500 : (n <= 9 ? 1500 : 700));
+    cfg.iterations = get_int(args, "iters", n <= 7 ? 2500 : (n <= 9 ? 2300 : 900));
     cfg.endgame_depth = get_int(args, "endgame", n <= 7 ? 8 : (n <= 9 ? 5 : 3));
     cfg.exploration = get_double(args, "cpuct", 1.15);
     cfg.rollout_weight = get_double(args, "rollout-weight", 0.45);
     cfg.use_rollout = get_int(args, "rollout", 1) != 0;
+    cfg.dirichlet_alpha = get_double(args, "dir-alpha", 0.3);
+    cfg.dirichlet_epsilon = get_double(args, "dir-eps", 0.25);
+    cfg.fpu_reduction = get_double(args, "fpu", 0.25);
+    // Root noise stays off for interactive play / analysis; self-play turns it
+    // on explicitly so generated games keep exploring openings.
+    cfg.add_root_noise = get_int(args, "root-noise", 0) != 0;
     return cfg;
 }
 
-std::unique_ptr<TinyNet> load_model_if_requested(const Args& args, int n) {
-    std::string model_path = get_string(args, "model", "");
-    if (model_path.empty()) return nullptr;
+// Load either model format, auto-detected from the file header tag.
+std::unique_ptr<NeuralNet> load_any_model(const std::string& path, int n) {
+    if (path.empty()) return nullptr;
+    std::string tag;
+    {
+        std::ifstream in(path);
+        if (!in) {
+            std::cerr << "model open failed: " << path << "\n";
+            return nullptr;
+        }
+        in >> tag;
+    }
+    if (tag == "HEXCNN_V1") {
+        auto net = std::make_unique<ConvNet>();
+        if (!net->load(path)) {
+            std::cerr << "cnn load failed: " << path << "\n";
+            return nullptr;
+        }
+        if (net->n != n) {
+            std::cerr << "cnn board size mismatch. model=" << net->n << " requested=" << n << "\n";
+            return nullptr;
+        }
+        return net;
+    }
     auto net = std::make_unique<TinyNet>();
-    if (!net->load(model_path)) {
-        std::cerr << "model load failed: " << model_path << "\n";
+    if (!net->load(path)) {
+        std::cerr << "model load failed: " << path << "\n";
         return nullptr;
     }
     if (net->n != n) {
@@ -1150,6 +1647,10 @@ std::unique_ptr<TinyNet> load_model_if_requested(const Args& args, int n) {
         return nullptr;
     }
     return net;
+}
+
+std::unique_ptr<NeuralNet> load_model_if_requested(const Args& args, int n) {
+    return load_any_model(get_string(args, "model", ""), n);
 }
 
 int run_play(const Args& args) {
@@ -1233,6 +1734,33 @@ int run_move(const Args& args) {
     return 0;
 }
 
+// Print the raw network output (value + all policy logits) for one position.
+// No search. Used to cross-validate the Python trainer's export against the
+// C++ reader: identical board/player/model must give identical numbers.
+int run_eval(const Args& args) {
+    int n = get_int(args, "n", 9);
+    auto rules = std::make_shared<Rules>(n);
+    GameState gs(rules);
+    std::string board_text = get_string(args, "board", std::string(rules->nn, '.'));
+    if (!parse_board_text(board_text, rules->nn, gs.board)) {
+        std::cerr << "Use --board with " << rules->nn << " chars: . B W or 0 1 2.\n";
+        return 2;
+    }
+    int player = get_int(args, "player", BLACK);
+    auto net = load_model_if_requested(args, n);
+    if (!net || !net->is_ready()) {
+        std::cerr << "eval needs a valid --model\n";
+        return 2;
+    }
+    Eval e = net->evaluate(gs.board, player);
+    std::cout << std::setprecision(9);
+    std::cout << "value " << e.value << "\n";
+    std::cout << "logits";
+    for (double l : e.logits) std::cout << ' ' << l;
+    std::cout << "\n";
+    return 0;
+}
+
 int run_selfplay(const Args& args) {
     int n = get_int(args, "n", 9);
     int games = get_int(args, "games", 10);
@@ -1241,6 +1769,8 @@ int run_selfplay(const Args& args) {
     g_rng = Random(static_cast<uint64_t>(get_int(args, "seed", 123456789)));
     auto rules = std::make_shared<Rules>(n);
     SearchConfig cfg = config_from_args(args, n);
+    // Self-play explores openings via root noise unless explicitly disabled.
+    cfg.add_root_noise = get_int(args, "root-noise", 1) != 0;
     auto net = load_model_if_requested(args, n);
 
     int total_positions = 0;
@@ -1357,6 +1887,81 @@ int run_pipeline(const Args& args) {
     return 0;
 }
 
+// Build a search config for one side of a match. Starts from the shared
+// defaults and applies any per-side overrides carrying the given suffix
+// (e.g. "iters-a", "rollout-b", "cpuct-a").
+SearchConfig side_config(const Args& args, int n, const std::string& suffix) {
+    SearchConfig cfg = config_from_args(args, n);
+    cfg.add_root_noise = false;  // matches use deterministic best-move selection
+    if (args.opt.count("iters" + suffix)) cfg.iterations = get_int(args, "iters" + suffix, cfg.iterations);
+    if (args.opt.count("endgame" + suffix)) cfg.endgame_depth = get_int(args, "endgame" + suffix, cfg.endgame_depth);
+    if (args.opt.count("cpuct" + suffix)) cfg.exploration = get_double(args, "cpuct" + suffix, cfg.exploration);
+    if (args.opt.count("fpu" + suffix)) cfg.fpu_reduction = get_double(args, "fpu" + suffix, cfg.fpu_reduction);
+    if (args.opt.count("rollout" + suffix)) cfg.use_rollout = get_int(args, "rollout" + suffix, 1) != 0;
+    if (args.opt.count("rollout-weight" + suffix))
+        cfg.rollout_weight = get_double(args, "rollout-weight" + suffix, cfg.rollout_weight);
+    return cfg;
+}
+
+// Engine-vs-engine match for measuring strength. Side A and side B can use
+// different models (--model-a/--model-b, falling back to --model) and different
+// search settings (suffix -a/-b). Colors alternate each game and every game is
+// seeded from --seed so results are reproducible yet varied.
+int run_match(const Args& args) {
+    int n = get_int(args, "n", 9);
+    int games = get_int(args, "games", 20);
+    uint64_t base_seed = static_cast<uint64_t>(get_int(args, "seed", 12345));
+    auto rules = std::make_shared<Rules>(n);
+
+    std::string model_shared = get_string(args, "model", "");
+    std::string model_a = get_string(args, "model-a", model_shared);
+    std::string model_b = get_string(args, "model-b", model_shared);
+    auto net_a = load_any_model(model_a, n);
+    auto net_b = load_any_model(model_b, n);
+
+    SearchConfig cfg_a = side_config(args, n, "-a");
+    SearchConfig cfg_b = side_config(args, n, "-b");
+    bool verbose = get_int(args, "verbose", 0) != 0;
+
+    int a_wins = 0, b_wins = 0;
+    int a_black = 0, a_white = 0, b_black = 0, b_white = 0;
+    for (int g = 1; g <= games; ++g) {
+        bool a_is_black = (g % 2 == 1);
+        g_rng = Random(base_seed + static_cast<uint64_t>(g));
+        GameState st(rules);
+        while (!st.is_terminal() && !legal_moves(st).empty()) {
+            bool a_to_move = (st.cur == BLACK) == a_is_black;
+            const SearchConfig& cfg = a_to_move ? cfg_a : cfg_b;
+            const NeuralNet* net = a_to_move ? net_a.get() : net_b.get();
+            SearchResult sr = search_position(st, cfg, net);
+            if (sr.move < 0) break;
+            st = st.apply(sr.move);
+        }
+        int w = st.winner();
+        bool black_won = (w == BLACK);
+        bool a_won = (black_won == a_is_black);
+        if (a_won) {
+            ++a_wins;
+            if (a_is_black) ++a_black; else ++a_white;
+        } else {
+            ++b_wins;
+            if (a_is_black) ++b_white; else ++b_black;
+        }
+        if (verbose) {
+            std::cout << "game " << g << "/" << games
+                      << " A=" << (a_is_black ? "Black" : "White")
+                      << " winner=" << (black_won ? "Black" : "White")
+                      << " -> " << (a_won ? "A" : "B") << "\n";
+        }
+    }
+
+    std::cout << "A wins " << a_wins << "/" << games
+              << " (as black " << a_black << ", as white " << a_white << ")\n";
+    std::cout << "B wins " << b_wins << "/" << games
+              << " (as black " << b_black << ", as white " << b_white << ")\n";
+    return 0;
+}
+
 int run_legacy_args(int argc, char* argv[]) {
     int n = std::stoi(argv[1]);
     auto rules = std::make_shared<Rules>(n);
@@ -1376,15 +1981,38 @@ int run_legacy_args(int argc, char* argv[]) {
     return 0;
 }
 
+// Create a randomly-initialised ConvNet and save it in HEXCNN_V1 format. Used
+// to validate the C++ CNN plumbing locally before any real (Colab) training.
+int run_initcnn(const Args& args) {
+    int n = get_int(args, "n", 9);
+    int channels = get_int(args, "channels", 32);
+    int blocks = get_int(args, "blocks", 4);
+    std::string out = get_string(args, "out", "hex_cnn.nn");
+    uint64_t seed = static_cast<uint64_t>(get_int(args, "seed", 20240601));
+    ConvNet net;
+    net.init(n, channels, blocks, seed);
+    if (!net.save(out)) {
+        std::cerr << "cnn save failed: " << out << "\n";
+        return 5;
+    }
+    std::cout << "initialized CNN: n=" << n << " channels=" << channels
+              << " blocks=" << blocks << " -> " << out << "\n";
+    return 0;
+}
+
 void print_help() {
     std::cout
         << "Hex AI commands\n"
-        << "  play      --n 9 --iters 1500 [--model hex_model.nn] [--human b]\n"
+        << "  play      --n 9 --iters 2300 [--model hex_model.nn] [--human b]\n"
         << "  move      --n 9 --board <81 chars> --player 1 --last -1\n"
         << "  selfplay  --n 9 --games 20 --iters 400 --out hex_selfplay.tsv [--model hex_model.nn]\n"
         << "  train     --n 9 --data hex_selfplay.tsv --model-out hex_model.nn --epochs 5\n"
         << "  pipeline  --n 9 --cycles 3 --games 10 --iters 300 --data hex_selfplay.tsv --model hex_model.nn\n"
+        << "  match     --n 9 --games 20 --model-a a.nn --model-b b.nn [--iters-a N] [--rollout-b 0]\n"
+        << "  initcnn   --n 9 --channels 32 --blocks 4 --out hex_cnn.nn   (random CNN, HEXCNN_V1)\n"
+        << "  eval      --n 9 --board <81 chars> --player 1 --model m.nn  (raw value+logits, no search)\n"
         << "\n"
+        << "Models: HEXNN_V1 (MLP) and HEXCNN_V1 (conv resnet) are auto-detected.\n"
         << "Board chars: . or 0 = empty, B/1 = black, W/2 = white.\n"
         << "Black connects top-bottom. White connects left-right.\n";
 }
@@ -1408,6 +2036,9 @@ int main(int argc, char* argv[]) {
     if (args.command == "selfplay") return run_selfplay(args);
     if (args.command == "train") return run_train(args);
     if (args.command == "pipeline") return run_pipeline(args);
+    if (args.command == "match") return run_match(args);
+    if (args.command == "initcnn") return run_initcnn(args);
+    if (args.command == "eval") return run_eval(args);
 
     std::cerr << "unknown command: " << args.command << "\n";
     print_help();

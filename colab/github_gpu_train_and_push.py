@@ -130,30 +130,39 @@ def merge_new_selfplay_parts(repo_dir: Path, data_path: Path, manifest_path: Pat
 
 
 def train_model(args: argparse.Namespace, repo_dir: Path, data_path: Path, model_in: Path, model_out: Path) -> None:
-    trainer = repo_dir / "colab" / "colab_train_torch.py"
+    script = "colab_train_cnn.py" if args.arch == "cnn" else "colab_train_torch.py"
+    trainer = repo_dir / "colab" / script
     if not trainer.exists():
         raise FileNotFoundError(f"trainer not found: {trainer}")
 
     cmd = [
         sys.executable,
         str(trainer),
-        "--n",
-        str(args.n),
-        "--data",
-        str(data_path),
-        "--model-out",
-        str(model_out),
-        "--epochs",
-        str(args.epochs),
-        "--lr",
-        str(args.lr),
-        "--batch-size",
-        str(args.batch_size),
-        "--optimizer",
-        args.optimizer,
+        "--n", str(args.n),
+        "--data", str(data_path),
+        "--model-out", str(model_out),
+        "--epochs", str(args.epochs),
+        "--lr", str(args.lr),
+        "--batch-size", str(args.batch_size),
+        "--optimizer", args.optimizer,
     ]
+    if args.arch == "cnn":
+        cmd += [
+            "--channels", str(args.channels),
+            "--blocks", str(args.blocks),
+            "--val-hidden", str(args.val_hidden),
+            "--symmetry", args.symmetry,
+        ]
+
+    # Only resume from an existing model if it matches the chosen architecture.
+    # Switching arch (or the very first run) starts fresh.
     if model_in.exists():
-        cmd += ["--model-in", str(model_in)]
+        tag = model_tag(model_in)
+        if tag == ARCH_TAG[args.arch]:
+            cmd += ["--model-in", str(model_in)]
+        else:
+            print(f"existing model is '{tag}', not {ARCH_TAG[args.arch]}; starting fresh.", flush=True)
+
     if args.limit > 0:
         cmd += ["--limit", str(args.limit)]
     if args.recent:
@@ -183,6 +192,8 @@ def push_model(
         "date": today,
         "count": prev_count + 1,
         "trainer": "colab-pytorch-cuda",
+        "arch": args.arch,
+        "model_format": ARCH_TAG[args.arch],
         "n": args.n,
         "epochs": args.epochs,
         "lr": args.lr,
@@ -192,6 +203,11 @@ def push_model(
         "merged_new_positions": merged_lines,
         "model_path": "models/hex_model.nn",
     }
+    if args.arch == "cnn":
+        state["channels"] = args.channels
+        state["blocks"] = args.blocks
+        state["val_hidden"] = args.val_hidden
+        state["symmetry"] = args.symmetry
     save_json(repo_dir / TRAIN_STATE_REL, state)
 
     run(["git", "lfs", "track", "*.nn", "*.tsv", "*.zip"], cwd=repo_dir, secret=token)
@@ -206,6 +222,18 @@ def push_model(
     run(["git", "push", "origin", args.branch], cwd=repo_dir, secret=token)
 
 
+ARCH_TAG = {"mlp": "HEXNN_V1", "cnn": "HEXCNN_V1"}
+
+
+def model_tag(path: Path) -> str:
+    """First whitespace-delimited token of a model file (its format tag)."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as f:
+            return f.read(64).split()[0]
+    except Exception:
+        return ""
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Train HexAI on Colab GPU and push model to GitHub")
     p.add_argument("--repo-url", default="https://github.com/Koushien552/Damaten.git")
@@ -215,13 +243,34 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--git-user-name", default="Damaten Colab GPU")
     p.add_argument("--git-user-email", default="damaten-colab-gpu@local")
     p.add_argument("--n", type=int, default=9)
-    p.add_argument("--epochs", type=int, default=6)
-    p.add_argument("--lr", type=float, default=0.003)
-    p.add_argument("--batch-size", type=int, default=2048)
-    p.add_argument("--optimizer", choices=["sgd", "adamw"], default="sgd")
+    p.add_argument("--arch", choices=["mlp", "cnn"], default="cnn",
+                   help="mlp = TinyNet (HEXNN_V1), cnn = conv ResNet (HEXCNN_V1)")
+    # Shared hyper-parameters. Default None so arch-specific defaults can apply.
+    p.add_argument("--epochs", type=int, default=None)
+    p.add_argument("--lr", type=float, default=None)
+    p.add_argument("--batch-size", type=int, default=None)
+    p.add_argument("--optimizer", choices=["sgd", "adamw"], default=None)
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--recent", action="store_true")
-    return p.parse_args(argv)
+    # CNN-only hyper-parameters (ignored for --arch mlp).
+    p.add_argument("--channels", type=int, default=32)
+    p.add_argument("--blocks", type=int, default=4)
+    p.add_argument("--val-hidden", type=int, default=64)
+    p.add_argument("--symmetry", choices=["none", "rot180", "full"], default="full")
+    args = p.parse_args(argv)
+
+    # Fill arch-appropriate defaults for anything the user left unset.
+    if args.arch == "cnn":
+        if args.epochs is None: args.epochs = 8
+        if args.lr is None: args.lr = 1e-3
+        if args.batch_size is None: args.batch_size = 1024
+        if args.optimizer is None: args.optimizer = "adamw"
+    else:
+        if args.epochs is None: args.epochs = 6
+        if args.lr is None: args.lr = 0.003
+        if args.batch_size is None: args.batch_size = 2048
+        if args.optimizer is None: args.optimizer = "sgd"
+    return args
 
 
 def main(argv: list[str]) -> int:
