@@ -1310,6 +1310,10 @@ struct SearchConfig {
     double fpu_reduction = 0.25;
     // MCTS-Solver: back up proven win/loss results to play forced lines exactly.
     bool use_solver = true;
+    // Blend the root policy prior with the hand heuristic (0 = pure net prior,
+    // 1 = pure heuristic). A weak/biased net opening prior can be corrected by
+    // mixing in the heuristic's centre/connection preference.
+    double prior_blend = 0.0;
 };
 
 struct SearchResult {
@@ -1416,6 +1420,13 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
 
     MCTSNode root(root_state, nullptr, -1, 1.0, net);
     if (root.untried.empty()) return result;
+    if (config.prior_blend > 0.0) {
+        std::vector<double> heur = heuristic_priors(root_state);
+        double b = std::min(1.0, config.prior_blend);
+        for (int i = 0; i < root_state.rules->nn; ++i) {
+            root.priors[i] = (1.0 - b) * root.priors[i] + b * heur[i];
+        }
+    }
     if (config.add_root_noise) {
         add_dirichlet_noise(root.priors, root.untried, config.dirichlet_alpha, config.dirichlet_epsilon);
     }
@@ -1669,6 +1680,7 @@ SearchConfig config_from_args(const Args& args, int n) {
     cfg.dirichlet_epsilon = get_double(args, "dir-eps", 0.25);
     cfg.fpu_reduction = get_double(args, "fpu", 0.25);
     cfg.use_solver = get_int(args, "solver", 1) != 0;
+    cfg.prior_blend = get_double(args, "prior-blend", 0.0);
     // Root noise stays off for interactive play / analysis; self-play turns it
     // on explicitly so generated games keep exploring openings.
     cfg.add_root_noise = get_int(args, "root-noise", 0) != 0;
@@ -1963,6 +1975,7 @@ SearchConfig side_config(const Args& args, int n, const std::string& suffix) {
     if (args.opt.count("rollout-weight" + suffix))
         cfg.rollout_weight = get_double(args, "rollout-weight" + suffix, cfg.rollout_weight);
     if (args.opt.count("solver" + suffix)) cfg.use_solver = get_int(args, "solver" + suffix, 1) != 0;
+    if (args.opt.count("prior-blend" + suffix)) cfg.prior_blend = get_double(args, "prior-blend" + suffix, cfg.prior_blend);
     return cfg;
 }
 
@@ -2075,7 +2088,7 @@ void print_help() {
         << "  initcnn   --n 9 --channels 32 --blocks 4 --out hex_cnn.nn   (random CNN, HEXCNN_V1)\n"
         << "  eval      --n 9 --board <81 chars> --player 1 --model m.nn  (raw value+logits, no search)\n"
         << "\n"
-        << "Search flags: --cpuct --fpu --rollout 0|1 --solver 0|1 (MCTS-Solver, on by default).\n"
+        << "Search flags: --cpuct --fpu --rollout 0|1 --solver 0|1 --prior-blend 0..1.\n"
         << "Models: HEXNN_V1 (MLP) and HEXCNN_V1 (conv resnet) are auto-detected.\n"
         << "Board chars: . or 0 = empty, B/1 = black, W/2 = white.\n"
         << "Black connects top-bottom. White connects left-right.\n";
