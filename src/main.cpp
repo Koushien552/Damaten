@@ -1308,6 +1308,8 @@ struct SearchConfig {
     // First-play urgency: optimism applied to not-yet-expanded moves so PUCT
     // can lean on the policy network instead of expanding every sibling first.
     double fpu_reduction = 0.25;
+    // MCTS-Solver: back up proven win/loss results to play forced lines exactly.
+    bool use_solver = true;
 };
 
 struct SearchResult {
@@ -1328,6 +1330,9 @@ struct MCTSNode {
     double prior_from_parent = 1.0;
     double cached_net_black = 0.5;  // network value cached from construction
     bool has_cached_net = false;
+    // MCTS-Solver: proven game-theoretic value from st.cur's perspective.
+    //   +1 = side to move wins with best play, -1 = loses, 0 = unknown.
+    int proven = 0;
 
     MCTSNode(const GameState& state, MCTSNode* par, int mv, double prior, const NeuralNet* net)
         : st(state), parent(par), move(mv), prior_from_parent(prior) {
@@ -1336,6 +1341,9 @@ struct MCTSNode {
         cached_net_black = e.net_black;
         has_cached_net = e.has_net;
         untried = legal_moves(st);
+        // A terminal position means the previous mover just connected, so the
+        // side to move here has already lost.
+        if (st.is_terminal()) proven = -1;
     }
 
     // Win probability at this node from the perspective of the side to move.
@@ -1422,7 +1430,8 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
         // so promising lines can be deepened without first expanding every
         // sibling. With a trained policy the priors are sharp enough that this
         // focuses the limited simulation budget on strong moves.
-        while (!node->st.is_terminal()) {
+        // Stop descending at terminal or already-proven nodes (treat as leaves).
+        while (!node->st.is_terminal() && !(config.use_solver && node->proven != 0)) {
             double sqrt_n = std::sqrt(static_cast<double>(std::max(1, node->visits)));
             double fpu = std::max(0.0, std::min(1.0, node->value_for_cur() - config.fpu_reduction));
 
@@ -1440,13 +1449,19 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
             MCTSNode* best_child = nullptr;
             double best_child_score = -std::numeric_limits<double>::infinity();
             for (const auto& child : node->children) {
-                double q = fpu;
-                if (child->visits > 0) {
-                    double black_q = child->black_wins / child->visits;
-                    q = node->st.cur == BLACK ? black_q : (1.0 - black_q);
+                double score;
+                if (config.use_solver && child->proven == -1) {
+                    score = std::numeric_limits<double>::infinity();    // move wins for us
+                } else if (config.use_solver && child->proven == 1) {
+                    score = -std::numeric_limits<double>::infinity();   // move loses for us
+                } else {
+                    double q = fpu;
+                    if (child->visits > 0) {
+                        double black_q = child->black_wins / child->visits;
+                        q = node->st.cur == BLACK ? black_q : (1.0 - black_q);
+                    }
+                    score = q + config.exploration * child->prior_from_parent * sqrt_n / (1.0 + child->visits);
                 }
-                double u = config.exploration * child->prior_from_parent * sqrt_n / (1.0 + child->visits);
-                double score = q + u;
                 if (score > best_child_score) {
                     best_child_score = score;
                     best_child = child.get();
@@ -1481,21 +1496,67 @@ SearchResult mcts_search(const GameState& root_state, const SearchConfig& config
             path.push_back(node);
         }
 
-        double black_win = evaluate_leaf_black_win(node->st, node->cached_net_black, node->has_cached_net, config);
+        double black_win;
+        if (config.use_solver && node->proven != 0) {
+            double cur_win = (node->proven == 1) ? 1.0 : 0.0;
+            black_win = (node->st.cur == BLACK) ? cur_win : (1.0 - cur_win);
+        } else {
+            black_win = evaluate_leaf_black_win(node->st, node->cached_net_black, node->has_cached_net, config);
+        }
         for (MCTSNode* p : path) {
             ++p->visits;
             p->black_wins += black_win;
         }
+
+        if (config.use_solver) {
+            // MCTS-Solver: back up proven win/loss along the visited path.
+            for (int i = static_cast<int>(path.size()) - 2; i >= 0; --i) {
+                MCTSNode* par = path[i];
+                if (par->proven != 0) break;
+                const MCTSNode* ch = path[i + 1];
+                if (ch->proven == -1) {
+                    par->proven = 1;  // a move into the opponent's loss is our win
+                } else if (ch->proven == 1) {
+                    if (!par->untried.empty()) break;  // unexplored moves remain
+                    bool all_lost = true;
+                    for (const auto& c : par->children) {
+                        if (c->proven != 1) { all_lost = false; break; }
+                    }
+                    if (all_lost) par->proven = -1; else break;
+                } else {
+                    break;  // child value still unknown
+                }
+            }
+            if (root.proven != 0) break;  // root is solved; no need to search further
+        }
     }
 
-    MCTSNode* best = nullptr;
+    // Final move choice (MCTS-Solver aware):
+    //   1. a proven winning move if one exists,
+    //   2. otherwise the most-visited move that is not a proven loss,
+    //   3. otherwise the most-visited move (position is lost either way).
+    MCTSNode* best = nullptr;          // most visits overall
+    MCTSNode* best_win = nullptr;      // proven win for us (child proven == -1)
+    MCTSNode* best_nonloss = nullptr;  // most visits among non-losing moves
     for (const auto& child : root.children) {
         result.visits[child->move] = child->visits;
         if (!best || child->visits > best->visits) best = child.get();
+        if (config.use_solver) {
+            if (child->proven == -1 && (!best_win || child->visits > best_win->visits)) best_win = child.get();
+            if (child->proven != 1 && (!best_nonloss || child->visits > best_nonloss->visits)) best_nonloss = child.get();
+        }
     }
-    if (best) {
-        result.move = best->move;
-        result.black_win_estimate = best->visits > 0 ? best->black_wins / best->visits : 0.5;
+    MCTSNode* chosen = config.use_solver ? (best_win ? best_win : (best_nonloss ? best_nonloss : best)) : best;
+    if (chosen) {
+        result.move = chosen->move;
+        result.black_win_estimate = chosen->visits > 0 ? chosen->black_wins / chosen->visits : 0.5;
+        if (config.use_solver && best_win) {
+            // Make the visit-based policy target (used by self-play) agree with
+            // the proven winning move.
+            int maxv = 0;
+            for (const auto& child : root.children) maxv = std::max(maxv, child->visits);
+            result.visits[chosen->move] = std::max(result.visits[chosen->move], maxv + 1);
+        }
     } else {
         auto moves = legal_moves(root_state);
         result.move = moves.empty() ? -1 : moves.front();
@@ -1607,6 +1668,7 @@ SearchConfig config_from_args(const Args& args, int n) {
     cfg.dirichlet_alpha = get_double(args, "dir-alpha", 0.3);
     cfg.dirichlet_epsilon = get_double(args, "dir-eps", 0.25);
     cfg.fpu_reduction = get_double(args, "fpu", 0.25);
+    cfg.use_solver = get_int(args, "solver", 1) != 0;
     // Root noise stays off for interactive play / analysis; self-play turns it
     // on explicitly so generated games keep exploring openings.
     cfg.add_root_noise = get_int(args, "root-noise", 0) != 0;
@@ -1900,6 +1962,7 @@ SearchConfig side_config(const Args& args, int n, const std::string& suffix) {
     if (args.opt.count("rollout" + suffix)) cfg.use_rollout = get_int(args, "rollout" + suffix, 1) != 0;
     if (args.opt.count("rollout-weight" + suffix))
         cfg.rollout_weight = get_double(args, "rollout-weight" + suffix, cfg.rollout_weight);
+    if (args.opt.count("solver" + suffix)) cfg.use_solver = get_int(args, "solver" + suffix, 1) != 0;
     return cfg;
 }
 
@@ -2012,6 +2075,7 @@ void print_help() {
         << "  initcnn   --n 9 --channels 32 --blocks 4 --out hex_cnn.nn   (random CNN, HEXCNN_V1)\n"
         << "  eval      --n 9 --board <81 chars> --player 1 --model m.nn  (raw value+logits, no search)\n"
         << "\n"
+        << "Search flags: --cpuct --fpu --rollout 0|1 --solver 0|1 (MCTS-Solver, on by default).\n"
         << "Models: HEXNN_V1 (MLP) and HEXCNN_V1 (conv resnet) are auto-detected.\n"
         << "Board chars: . or 0 = empty, B/1 = black, W/2 = white.\n"
         << "Black connects top-bottom. White connects left-right.\n";
