@@ -1,6 +1,6 @@
 param(
     [string]$RepoPath = (Split-Path -Parent $PSScriptRoot),
-    [string]$HexRoot = "C:\Users\USER\Documents\Codex\2026-05-30\hex-visual-studio-2022-google-colab",
+    [string]$HexRoot = "C:\path\to\hex-visual-studio-project",  # pass -HexRoot or edit before running
     [string]$ExePath = "",
     [string]$GitRemote = "https://github.com/Koushien552/Damaten.git",
     [string]$Branch = "main",

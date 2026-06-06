@@ -12,3 +12,6 @@ task_wrappers/
 *.download
 __pycache__/
 .ipynb_checkpoints/
+# Local diagnostic logs contain absolute machine paths; keep them out of the
+# (public) repo. Colab does not need them.
+logs/

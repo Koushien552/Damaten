@@ -57,26 +57,22 @@ $sentOut = [ordered]@{
 }
 $sentOut | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $sentPath -Encoding UTF8
 
-$logTarget = Join-Path $cfg.RepoPath "logs\windows\$machine"
-Ensure-DamatenDirectory $logTarget
-if (Test-Path -LiteralPath $cfg.LogPath) {
-    Copy-Item -LiteralPath $cfg.LogPath -Destination (Join-Path $logTarget "$date.log") -Force
-}
+# Diagnostic logs stay local only (see .gitignore); they contain absolute
+# machine paths and the repo is public, so they are not committed.
 
+# Manifest intentionally omits absolute paths (source_parts_dir/data_path/
+# model_path) to avoid leaking the local directory layout into a public repo.
 $manifest = [ordered]@{
     machine = $machine
     pushed_at = (Get-Date).ToString("o")
-    source_parts_dir = $cfg.PartsDir
     copied_new_parts = $copied
     eligible_parts = @($parts).Count
-    data_path = $cfg.DataPath
     data_bytes = if (Test-Path -LiteralPath $cfg.DataPath) { (Get-Item -LiteralPath $cfg.DataPath).Length } else { 0 }
-    model_path = $cfg.ModelPath
     model_bytes = if (Test-Path -LiteralPath $cfg.ModelPath) { (Get-Item -LiteralPath $cfg.ModelPath).Length } else { 0 }
 }
 $manifest | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $manifestDir "$machine.json") -Encoding UTF8
 
-Invoke-DamatenGit $cfg @("add", ".gitattributes", "selfplay", "logs", "manifests")
+Invoke-DamatenGit $cfg @("add", ".gitattributes", "selfplay", "manifests")
 
 $status = & git -C $cfg.RepoPath status --porcelain
 if ([string]::IsNullOrWhiteSpace(($status -join "`n"))) {
