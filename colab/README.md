@@ -29,6 +29,14 @@ python /content/DamatenTraining/Damaten/colab/github_gpu_train_and_push.py \
 
 To keep training the old MLP instead, pass `--arch mlp`.
 
+The CNN trainer (`colab_train_cnn.py`) holds out a validation split (5% of base
+positions, taken *before* symmetry augmentation so copies never leak across the
+split), uses a cosine LR schedule with warmup, and **keeps the checkpoint with
+the best validation loss** rather than the last epoch. Each epoch prints
+`val_loss / policy / value / top1% / vmae` so you can see the model improving.
+Useful extra flags: `--val-frac`, `--schedule {cosine,step}`, `--warmup-epochs`,
+`--grad-clip`, `--save-best 0`.
+
 The script pushes:
 
 ```text

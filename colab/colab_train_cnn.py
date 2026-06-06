@@ -27,6 +27,7 @@ and compare the printed value/logits with this model's output on the same input.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 from pathlib import Path
@@ -243,7 +244,9 @@ def fmt_vec(vals):
 
 
 def save_hexcnn(model: HexResNet, path: Path) -> None:
-    model = model.cpu()
+    # NB: do not move the model to CPU here -- flat() already copies each tensor
+    # to CPU, and this is called mid-training (best-checkpoint) so the model must
+    # stay on its current device.
     lines = [f"HEXCNN_V1 {model.n} {model.C} {model.B} {model.in_planes} {model.val_hidden}"]
     lines.append(fmt_vec(flat(model.conv_in.weight)))
     lines.append(fmt_vec(flat(model.conv_in.bias)))
@@ -333,7 +336,59 @@ def parse_args(argv):
     p.add_argument("--symmetry", choices=["none", "rot180", "full"], default="full")
     p.add_argument("--optimizer", choices=["adamw", "sgd"], default="adamw")
     p.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    # Training-quality controls.
+    p.add_argument("--val-frac", type=float, default=0.05,
+                   help="fraction of base positions held out for validation (split before augmentation)")
+    p.add_argument("--schedule", choices=["cosine", "step"], default="cosine")
+    p.add_argument("--warmup-epochs", type=int, default=1)
+    p.add_argument("--min-lr-frac", type=float, default=0.05, help="cosine floor as a fraction of --lr")
+    p.add_argument("--grad-clip", type=float, default=0.0, help="max grad norm (0 disables)")
+    p.add_argument("--save-best", type=int, default=1, help="1 = keep the best-by-val-loss checkpoint")
     return p.parse_args(argv)
+
+
+def lr_for_epoch(args, epoch: int) -> float:
+    """1-indexed epoch -> learning rate."""
+    if epoch <= args.warmup_epochs and args.warmup_epochs > 0:
+        return args.lr * epoch / max(1, args.warmup_epochs)
+    if args.schedule == "step":
+        return args.lr * (args.lr_decay ** (epoch - 1))
+    # cosine over the post-warmup epochs
+    t = epoch - args.warmup_epochs
+    total = max(1, args.epochs - args.warmup_epochs)
+    floor = args.lr * args.min_lr_frac
+    cos = 0.5 * (1.0 + math.cos(math.pi * min(t, total) / total))
+    return floor + (args.lr - floor) * cos
+
+
+def evaluate_val(model, xb_all, pb_all, vb_all, value_weight, batch_size, device):
+    """Validation loss + policy top-1 accuracy + value MAE."""
+    model.eval()
+    n = xb_all.shape[0]
+    loss_sum = pol_loss = val_loss = 0.0
+    correct = 0
+    val_abs = 0.0
+    with torch.no_grad():
+        for i in range(0, n, batch_size):
+            xb = xb_all[i:i + batch_size].to(device, non_blocking=True)
+            pb = pb_all[i:i + batch_size].to(device, non_blocking=True)
+            vb = vb_all[i:i + batch_size].to(device, non_blocking=True)
+            logits, v = model(xb)
+            pl = -(pb * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
+            vl = F.mse_loss(v, vb)
+            bs = xb.shape[0]
+            loss_sum += float(pl + value_weight * vl) * bs
+            pol_loss += float(pl) * bs
+            val_loss += float(vl) * bs
+            correct += int((logits.argmax(dim=1) == pb.argmax(dim=1)).sum())
+            val_abs += float((v - vb).abs().sum())
+    return {
+        "loss": loss_sum / max(1, n),
+        "policy": pol_loss / max(1, n),
+        "value": val_loss / max(1, n),
+        "acc": correct / max(1, n),
+        "vmae": val_abs / max(1, n),
+    }
 
 
 def main(argv) -> int:
@@ -350,11 +405,20 @@ def main(argv) -> int:
 
     x, policy, value = load_examples(data_path, args.n, args.limit, args.recent)
     print(f"loaded examples={len(x)}", flush=True)
-    x, policy, value = augment(x, policy, value, args.n, args.symmetry)
-    print(f"after symmetry={args.symmetry}: examples={len(x)}", flush=True)
+
+    # Split into train/val on the BASE positions before augmentation, so a
+    # position and its symmetric copies never straddle the split (no leakage).
+    n_total = x.shape[0]
+    perm = torch.randperm(n_total, generator=torch.Generator().manual_seed(args.seed))
+    n_val = int(n_total * args.val_frac) if args.val_frac > 0 else 0
+    val_idx, train_idx = perm[:n_val], perm[n_val:]
+    xv, pv, vv = x[val_idx], policy[val_idx], value[val_idx]
+    xt, pt, vt = x[train_idx], policy[train_idx], value[train_idx]
+    xt, pt, vt = augment(xt, pt, vt, args.n, args.symmetry)
+    print(f"train={xt.shape[0]} (aug {args.symmetry}) val={xv.shape[0]}", flush=True)
 
     loader = DataLoader(
-        TensorDataset(x, policy, value),
+        TensorDataset(xt, pt, vt),
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=2,
@@ -374,8 +438,11 @@ def main(argv) -> int:
     else:
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    lr = args.lr
+    model_out.parent.mkdir(parents=True, exist_ok=True)
+    best_val = float("inf")
+    saved_best = False
     for epoch in range(1, args.epochs + 1):
+        lr = lr_for_epoch(args, epoch)
         for group in opt.param_groups:
             group["lr"] = lr
         model.train()
@@ -391,23 +458,33 @@ def main(argv) -> int:
             loss = policy_loss + args.value_weight * value_loss
             opt.zero_grad(set_to_none=True)
             loss.backward()
+            if args.grad_clip > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
             opt.step()
             bs = xb.shape[0]
             loss_sum += float(loss.detach()) * bs
             ploss_sum += float(policy_loss.detach()) * bs
             vloss_sum += float(value_loss.detach()) * bs
             count += bs
-        print(
-            f"epoch {epoch}/{args.epochs} loss={loss_sum / max(1, count):.5f} "
-            f"policy={ploss_sum / max(1, count):.5f} value={vloss_sum / max(1, count):.5f} "
-            f"lr={lr:.6g}",
-            flush=True,
-        )
-        lr *= args.lr_decay
 
-    model_out.parent.mkdir(parents=True, exist_ok=True)
-    save_hexcnn(model, model_out)
-    print(f"saved model: {model_out}", flush=True)
+        msg = (f"epoch {epoch}/{args.epochs} lr={lr:.6g} "
+               f"train_loss={loss_sum / max(1, count):.5f} "
+               f"(policy={ploss_sum / max(1, count):.5f} value={vloss_sum / max(1, count):.5f})")
+        if n_val > 0:
+            m = evaluate_val(model, xv, pv, vv, args.value_weight, args.batch_size, device)
+            msg += (f" | val_loss={m['loss']:.5f} policy={m['policy']:.5f} "
+                    f"value={m['value']:.5f} top1={m['acc']*100:.1f}% vmae={m['vmae']:.3f}")
+            if args.save_best and m["loss"] < best_val:
+                best_val = m["loss"]
+                save_hexcnn(model, model_out)
+                saved_best = True
+                msg += " *best"
+        print(msg, flush=True)
+
+    # If we never saved a best checkpoint (no val or save-best off), save final.
+    if not saved_best:
+        save_hexcnn(model, model_out)
+    print(f"saved model: {model_out}" + (f" (best val_loss={best_val:.5f})" if saved_best else ""), flush=True)
     return 0
 
 
