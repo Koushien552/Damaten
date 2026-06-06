@@ -37,6 +37,20 @@ the best validation loss** rather than the last epoch. Each epoch prints
 Useful extra flags: `--val-frac`, `--schedule {cosine,step}`, `--warmup-epochs`,
 `--grad-clip`, `--save-best 0`.
 
+## Model gating (only deploy if stronger)
+
+By default the pusher **gates** the new model: it compiles the engine and plays
+the candidate against the currently-deployed model (`hexai match`), and pushes
+the candidate only if its win-rate reaches `--gate-threshold` (default 0.55).
+This prevents strength regressions — a daily train that produces a weaker model
+is discarded and the current model stays deployed.
+
+Gating is skipped automatically on the first run and on an architecture switch
+(mlp->cnn), where a fair same-architecture comparison is not possible, so the
+first CNN always deploys. Tuning: `--gate 0` (disable), `--gate-games`,
+`--gate-iters`, `--gate-threshold`, `--gate-seed`. The gate match adds a few
+minutes to each run; lower `--gate-games`/`--gate-iters` to speed it up.
+
 The script pushes:
 
 ```text

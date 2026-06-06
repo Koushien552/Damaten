@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,6 +180,7 @@ def push_model(
     merged_files: int,
     merged_lines: int,
     prev_state: dict,
+    gate_detail: str = "",
 ) -> None:
     repo_model = repo_dir / "models" / "hex_model.nn"
     repo_model.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +204,7 @@ def push_model(
         "merged_new_files": merged_files,
         "merged_new_positions": merged_lines,
         "model_path": "models/hex_model.nn",
+        "gate": gate_detail or ("on" if args.gate else "off"),
     }
     if args.arch == "cnn":
         state["channels"] = args.channels
@@ -257,6 +260,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--blocks", type=int, default=4)
     p.add_argument("--val-hidden", type=int, default=64)
     p.add_argument("--symmetry", choices=["none", "rot180", "full"], default="full")
+    # Model gating: only deploy a candidate that beats the current model.
+    p.add_argument("--gate", type=int, default=1, help="1 = require the new model to beat the old in a match before pushing")
+    p.add_argument("--gate-games", type=int, default=40)
+    p.add_argument("--gate-iters", type=int, default=400)
+    p.add_argument("--gate-threshold", type=float, default=0.55, help="candidate win-rate needed to be accepted")
+    p.add_argument("--gate-seed", type=int, default=12345)
     args = p.parse_args(argv)
 
     # Fill arch-appropriate defaults for anything the user left unset.
@@ -271,6 +280,52 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         if args.batch_size is None: args.batch_size = 2048
         if args.optimizer is None: args.optimizer = "sgd"
     return args
+
+
+def compile_engine(repo_dir: Path, work_root: Path):
+    """Compile the C++ engine for gating matches. Returns the binary path, or
+    None if compilation is unavailable (gating is then skipped)."""
+    src = repo_dir / "src" / "main.cpp"
+    out = work_root / "hexai"
+    if out.exists() and src.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+        return out
+    try:
+        run(["g++", "-O3", "-std=c++17", "-march=native", "-o", str(out), str(src)])
+    except Exception as exc:  # noqa: BLE001
+        print(f"WARNING: engine compile failed ({exc}); gating disabled this run.", flush=True)
+        return None
+    return out
+
+
+def run_gate(engine: Path, candidate: Path, current: Path, args: argparse.Namespace) -> tuple[bool, str]:
+    """Play candidate (A) vs current (B). Accept the candidate iff its win rate
+    meets --gate-threshold. On any match/parse error, accept (fail-open) so the
+    pipeline keeps working, with a warning."""
+    cmd = [
+        str(engine), "match",
+        "--n", str(args.n),
+        "--games", str(args.gate_games),
+        "--iters", str(args.gate_iters),
+        "--model-a", str(candidate),
+        "--model-b", str(current),
+        "--seed", str(args.gate_seed),
+    ]
+    print("$", " ".join(cmd), flush=True)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    print(proc.stdout, flush=True)
+    if proc.returncode != 0:
+        print(f"WARNING: gate match failed (exit {proc.returncode}); accepting candidate.", flush=True)
+        return True, "gate-error-accept"
+    m = re.search(r"A wins (\d+)/(\d+)", proc.stdout)
+    if not m:
+        print("WARNING: could not parse gate result; accepting candidate.", flush=True)
+        return True, "gate-parse-fail-accept"
+    wins, games = int(m.group(1)), int(m.group(2))
+    rate = wins / max(1, games)
+    accepted = rate >= args.gate_threshold
+    detail = f"winrate={rate:.3f} ({wins}/{games}) threshold={args.gate_threshold}"
+    print(f"gate: {'ACCEPT' if accepted else 'REJECT'} {detail}", flush=True)
+    return accepted, detail
 
 
 def main(argv: list[str]) -> int:
@@ -299,16 +354,41 @@ def main(argv: list[str]) -> int:
     merged_files, merged_lines = merge_new_selfplay_parts(repo_dir, data_path, manifest_path)
     print(f"merged_new_files={merged_files} merged_new_positions={merged_lines}", flush=True)
 
-    local_model = work_root / "hex_model.nn"
+    current_model = work_root / "hex_model.nn"   # the currently-deployed model
     repo_model = repo_dir / "models" / "hex_model.nn"
-    if repo_model.exists():
-        shutil.copy2(repo_model, local_model)
+    have_current = repo_model.exists()
+    if have_current:
+        shutil.copy2(repo_model, current_model)
+    elif current_model.exists():
+        current_model.unlink()  # no deployed model -> train from scratch
 
-    next_model = work_root / "hex_model_next.nn"
-    train_model(args, repo_dir, data_path, local_model, next_model)
-    os.replace(next_model, local_model)
+    candidate = work_root / "hex_model_candidate.nn"
+    train_model(args, repo_dir, data_path, current_model, candidate)
 
-    push_model(args, repo_dir, local_model, token, merged_files, merged_lines, state)
+    # Gating: deploy the candidate only if it is at least as strong as the
+    # current model. Skipped on the first run or an architecture switch, where a
+    # fair same-arch comparison is not possible.
+    accept = True
+    gate_detail = "no-gate"
+    if args.gate:
+        same_arch = have_current and model_tag(current_model) == ARCH_TAG[args.arch]
+        if not same_arch:
+            gate_detail = "skip-gate (first run or arch switch)"
+            print(gate_detail, flush=True)
+        else:
+            engine = compile_engine(repo_dir, work_root)
+            if engine is None:
+                gate_detail = "gate-skip (engine unavailable)"
+            else:
+                accept, gate_detail = run_gate(engine, candidate, current_model, args)
+
+    if not accept:
+        print(f"candidate rejected; keeping the current model ({gate_detail}).", flush=True)
+        print("done", flush=True)
+        return 0
+
+    os.replace(candidate, current_model)
+    push_model(args, repo_dir, current_model, token, merged_files, merged_lines, state, gate_detail)
     print("done", flush=True)
     return 0
 
