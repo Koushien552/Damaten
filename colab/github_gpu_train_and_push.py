@@ -38,10 +38,28 @@ def jst_today() -> str:
     return datetime.now(JST).date().isoformat()
 
 
-def authed_url(url: str, token: str) -> str:
-    if not token or not url.startswith("https://github.com/"):
-        return url
-    return "https://x-access-token:" + token + "@" + url.removeprefix("https://")
+def setup_credentials(token: str) -> None:
+    """Configure auth that BOTH git and git-lfs honor, without putting the token
+    in any remote URL (so it never leaks into git's error output / Colab logs).
+
+    Embedding the token in the URL as ``https://<token>@github.com`` makes plain
+    git work but breaks ``git lfs`` (it asks for a password it can't read). A
+    credential-helper entry is used by git and git-lfs alike.
+    """
+    if not token:
+        return
+    run(["git", "config", "--global", "credential.helper", "store"], secret=token)
+    cred = Path.home() / ".git-credentials"
+    line = f"https://x-access-token:{token}@github.com"
+    kept = []
+    if cred.exists():
+        kept = [ln for ln in cred.read_text(encoding="utf-8").splitlines()
+                if ln.strip() and "@github.com" not in ln]
+    cred.write_text("\n".join(kept + [line]) + "\n", encoding="utf-8")
+    try:
+        os.chmod(cred, 0o600)
+    except OSError:
+        pass
 
 
 def run(cmd: list[str], cwd: Path | None = None, secret: str = "") -> None:
@@ -76,7 +94,8 @@ def load_train_state(repo_dir: Path) -> dict:
 
 def clone_or_pull(args: argparse.Namespace, token: str) -> Path:
     repo_dir = Path(args.work_root) / "Damaten"
-    url = authed_url(args.repo_url, token)
+    setup_credentials(token)
+    url = args.repo_url  # clean URL; auth comes from the credential helper
 
     if (repo_dir / ".git").exists():
         run(["git", "remote", "set-url", "origin", url], cwd=repo_dir, secret=token)
@@ -84,7 +103,6 @@ def clone_or_pull(args: argparse.Namespace, token: str) -> Path:
         run(["git", "clean", "-fd"], cwd=repo_dir, secret=token)
         run(["git", "checkout", "-B", args.branch, "FETCH_HEAD"], cwd=repo_dir, secret=token)
         run(["git", "reset", "--hard", "FETCH_HEAD"], cwd=repo_dir, secret=token)
-        run(["git", "pull", "--rebase", "--autostash", "origin", args.branch], cwd=repo_dir, secret=token)
     else:
         repo_dir.parent.mkdir(parents=True, exist_ok=True)
         run(["git", "clone", "--branch", args.branch, url, str(repo_dir)], secret=token)
