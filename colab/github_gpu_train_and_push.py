@@ -178,8 +178,12 @@ def train_model(args: argparse.Namespace, repo_dir: Path, data_path: Path, model
 
     if args.limit > 0:
         cmd += ["--limit", str(args.limit)]
-    if args.recent:
-        cmd += ["--recent"]
+        if args.recent:
+            cmd += ["--recent"]
+    elif args.arch == "cnn" and args.cnn_window > 0:
+        # Train on a sliding window of the most recent positions. Bounds RAM and
+        # epoch time as the self-play dataset grows without limit.
+        cmd += ["--recent", "--limit", str(args.cnn_window)]
 
     run(cmd)
 
@@ -272,6 +276,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--blocks", type=int, default=4)
     p.add_argument("--val-hidden", type=int, default=64)
     p.add_argument("--symmetry", choices=["none", "rot180", "full"], default="full")
+    p.add_argument("--cnn-window", type=int, default=1200000,
+                   help="CNN: train on the most recent N positions (0 = all). Bounds RAM/time as data grows.")
     # Model gating: only deploy a candidate that beats the current model.
     p.add_argument("--gate", type=int, default=1, help="1 = require the new model to beat the old in a match before pushing")
     p.add_argument("--gate-games", type=int, default=40)

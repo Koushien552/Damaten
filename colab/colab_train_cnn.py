@@ -29,13 +29,15 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Dataset
 
 
 BLACK = 1
@@ -116,6 +118,12 @@ def tail_data_lines(path: Path, limit: int, block_size: int = 1024 * 1024):
 
 
 def load_examples(path: Path, n: int, limit: int = 0, recent: bool = False):
+    """Load self-play rows into compact float32 numpy arrays.
+
+    Returns (X[N,3,n,n], P[N,nn], V[N,1]). Filling pre-allocated numpy arrays
+    (instead of Python lists of lists) keeps memory around ~1.4 GB for ~1M
+    positions instead of ~10 GB, which is what made Colab OOM-kill the trainer.
+    """
     nn_ = n * n
     if recent and limit > 0:
         rows = tail_data_lines(path, limit)
@@ -129,7 +137,11 @@ def load_examples(path: Path, n: int, limit: int = 0, recent: bool = False):
                 if limit > 0 and len(rows) >= limit:
                     break
 
-    xs, ps, vs = [], [], []
+    cap = len(rows)
+    X = np.zeros((cap, 3, n, n), dtype=np.float32)
+    P = np.zeros((cap, nn_), dtype=np.float32)
+    V = np.zeros((cap, 1), dtype=np.float32)
+    valid = 0
     for line in rows:
         cols = line.split("\t")
         if len(cols) < 6:
@@ -145,57 +157,59 @@ def load_examples(path: Path, n: int, limit: int = 0, recent: bool = False):
         board = parse_board(cols[2], nn_)
         if board is None:
             continue
-        xs.append(make_planes(board, player, n))   # [3, nn]
-        ps.append(parse_policy(cols[3], nn_))       # [nn]
-        vs.append(value)
+        b = np.asarray(board, dtype=np.int16)
+        opp = other_player(player)
+        X[valid, 0] = (b == player).astype(np.float32).reshape(n, n)
+        X[valid, 1] = (b == opp).astype(np.float32).reshape(n, n)
+        if player == BLACK:
+            X[valid, 2] = 1.0
+        P[valid] = parse_policy(cols[3], nn_)
+        V[valid, 0] = value
+        valid += 1
 
-    if not xs:
+    if valid == 0:
         raise RuntimeError(f"no examples loaded from {path}")
-
-    x = torch.tensor(xs, dtype=torch.float32).view(-1, 3, n, n)
-    policy = torch.tensor(ps, dtype=torch.float32)
-    value = torch.tensor(vs, dtype=torch.float32).view(-1, 1)
-    return x, policy, value
+    del rows
+    return X[:valid], P[:valid], V[:valid]
 
 
-def augment(x: torch.Tensor, policy: torch.Tensor, value: torch.Tensor, n: int, mode: str):
-    """Expand the dataset with Hex board symmetries.
+class HexDataset(Dataset):
+    """Serves (x, policy, value) with on-the-fly Hex symmetry augmentation, so the
+    4x expanded set never has to be materialised in memory at once.
 
-    mode = 'none'   -> identity only
-    mode = 'rot180' -> identity + 180 rotation (x2)
-    mode = 'full'   -> identity, rot180, transpose+swap, rot180.transpose (x4)
+    Symmetries (all value-preserving): identity, 180-degree rotation, transpose
+    with colour/role swap (which flips the constant colour plane), and their
+    composition. A random one is applied per item for training samples.
     """
-    if mode == "none":
-        return x, policy, value
 
-    pg = policy.view(-1, n, n)
-    xs = [x]
-    ps = [pg]
-    vs = [value]
+    def __init__(self, X, P, V, idx, n: int, symmetry: str, train: bool):
+        self.X = X
+        self.P = P
+        self.V = V
+        self.idx = idx
+        self.n = n
+        self.symmetry = symmetry
+        self.train = train
 
-    def rot180(xt, pt):
-        return torch.flip(xt, dims=[2, 3]), torch.flip(pt, dims=[1, 2])
+    def __len__(self) -> int:
+        return len(self.idx)
 
-    def transpose_swap(xt, pt):
-        xtt = xt.transpose(2, 3).contiguous()
-        # transpose+colour swap flips only the constant colour plane (channel 2)
-        xtt[:, 2, :, :] = 1.0 - xtt[:, 2, :, :]
-        ptt = pt.transpose(1, 2).contiguous()
-        return xtt, ptt
-
-    xr, pr = rot180(x, pg)
-    xs.append(xr); ps.append(pr); vs.append(value)
-
-    if mode == "full":
-        xt, pt = transpose_swap(x, pg)
-        xs.append(xt); ps.append(pt); vs.append(value)
-        xrt, prt = rot180(xt, pt)
-        xs.append(xrt); ps.append(prt); vs.append(value)
-
-    x_out = torch.cat(xs, dim=0)
-    p_out = torch.cat(ps, dim=0).reshape(-1, n * n)
-    v_out = torch.cat(vs, dim=0)
-    return x_out, p_out, v_out
+    def __getitem__(self, k: int):
+        i = int(self.idx[k])
+        x = torch.from_numpy(self.X[i].copy())                       # [3,n,n]
+        p = torch.from_numpy(self.P[i].copy()).view(self.n, self.n)  # [n,n]
+        v = torch.from_numpy(self.V[i].copy())                       # [1]
+        if self.train and self.symmetry != "none":
+            choices = ("id", "rot") if self.symmetry == "rot180" else ("id", "rot", "tr", "rot_tr")
+            t = random.choice(choices)
+            if t in ("rot", "rot_tr"):
+                x = torch.flip(x, dims=[1, 2])
+                p = torch.flip(p, dims=[0, 1])
+            if t in ("tr", "rot_tr"):
+                x = x.transpose(1, 2).contiguous()
+                x[2] = 1.0 - x[2]            # colour plane flips under role swap
+                p = p.t().contiguous()
+        return x, p.reshape(-1), v
 
 
 class HexResNet(nn.Module):
@@ -361,18 +375,18 @@ def lr_for_epoch(args, epoch: int) -> float:
     return floor + (args.lr - floor) * cos
 
 
-def evaluate_val(model, xb_all, pb_all, vb_all, value_weight, batch_size, device):
-    """Validation loss + policy top-1 accuracy + value MAE."""
+def evaluate_val(model, loader, value_weight, device):
+    """Validation loss + policy top-1 accuracy + value MAE over a DataLoader."""
     model.eval()
-    n = xb_all.shape[0]
+    n = 0
     loss_sum = pol_loss = val_loss = 0.0
     correct = 0
     val_abs = 0.0
     with torch.no_grad():
-        for i in range(0, n, batch_size):
-            xb = xb_all[i:i + batch_size].to(device, non_blocking=True)
-            pb = pb_all[i:i + batch_size].to(device, non_blocking=True)
-            vb = vb_all[i:i + batch_size].to(device, non_blocking=True)
+        for xb, pb, vb in loader:
+            xb = xb.to(device, non_blocking=True)
+            pb = pb.to(device, non_blocking=True)
+            vb = vb.to(device, non_blocking=True)
             logits, v = model(xb)
             pl = -(pb * F.log_softmax(logits, dim=1)).sum(dim=1).mean()
             vl = F.mse_loss(v, vb)
@@ -382,12 +396,14 @@ def evaluate_val(model, xb_all, pb_all, vb_all, value_weight, batch_size, device
             val_loss += float(vl) * bs
             correct += int((logits.argmax(dim=1) == pb.argmax(dim=1)).sum())
             val_abs += float((v - vb).abs().sum())
+            n += bs
+    n = max(1, n)
     return {
-        "loss": loss_sum / max(1, n),
-        "policy": pol_loss / max(1, n),
-        "value": val_loss / max(1, n),
-        "acc": correct / max(1, n),
-        "vmae": val_abs / max(1, n),
+        "loss": loss_sum / n,
+        "policy": pol_loss / n,
+        "value": val_loss / n,
+        "acc": correct / n,
+        "vmae": val_abs / n,
     }
 
 
@@ -403,27 +419,27 @@ def main(argv) -> int:
     if device.type == "cuda":
         print(f"gpu={torch.cuda.get_device_name(0)}", flush=True)
 
-    x, policy, value = load_examples(data_path, args.n, args.limit, args.recent)
-    print(f"loaded examples={len(x)}", flush=True)
+    X, P, V = load_examples(data_path, args.n, args.limit, args.recent)
+    N = X.shape[0]
+    print(f"loaded examples={N}", flush=True)
 
-    # Split into train/val on the BASE positions before augmentation, so a
-    # position and its symmetric copies never straddle the split (no leakage).
-    n_total = x.shape[0]
-    perm = torch.randperm(n_total, generator=torch.Generator().manual_seed(args.seed))
-    n_val = int(n_total * args.val_frac) if args.val_frac > 0 else 0
+    # Split indices for train/val. Augmentation is applied on the fly per item,
+    # so val samples (identity only) never share an augmented copy with train.
+    rng = np.random.default_rng(args.seed)
+    perm = rng.permutation(N)
+    n_val = int(N * args.val_frac) if args.val_frac > 0 else 0
     val_idx, train_idx = perm[:n_val], perm[n_val:]
-    xv, pv, vv = x[val_idx], policy[val_idx], value[val_idx]
-    xt, pt, vt = x[train_idx], policy[train_idx], value[train_idx]
-    xt, pt, vt = augment(xt, pt, vt, args.n, args.symmetry)
-    print(f"train={xt.shape[0]} (aug {args.symmetry}) val={xv.shape[0]}", flush=True)
+    print(f"train={len(train_idx)} (on-the-fly {args.symmetry}) val={len(val_idx)}", flush=True)
 
-    loader = DataLoader(
-        TensorDataset(xt, pt, vt),
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=2,
-        pin_memory=device.type == "cuda",
-    )
+    pin = device.type == "cuda"
+    train_ds = HexDataset(X, P, V, train_idx, args.n, args.symmetry, train=True)
+    loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
+                        num_workers=2, pin_memory=pin, drop_last=False)
+    val_loader = None
+    if n_val > 0:
+        val_ds = HexDataset(X, P, V, val_idx, args.n, "none", train=False)
+        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False,
+                                num_workers=2, pin_memory=pin)
 
     if model_in and model_in.exists():
         model = load_hexcnn(model_in)
@@ -470,8 +486,8 @@ def main(argv) -> int:
         msg = (f"epoch {epoch}/{args.epochs} lr={lr:.6g} "
                f"train_loss={loss_sum / max(1, count):.5f} "
                f"(policy={ploss_sum / max(1, count):.5f} value={vloss_sum / max(1, count):.5f})")
-        if n_val > 0:
-            m = evaluate_val(model, xv, pv, vv, args.value_weight, args.batch_size, device)
+        if val_loader is not None:
+            m = evaluate_val(model, val_loader, args.value_weight, device)
             msg += (f" | val_loss={m['loss']:.5f} policy={m['policy']:.5f} "
                     f"value={m['value']:.5f} top1={m['acc']*100:.1f}% vmae={m['vmae']:.3f}")
             if args.save_best and m["loss"] < best_val:
