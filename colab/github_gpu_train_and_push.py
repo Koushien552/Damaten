@@ -15,6 +15,7 @@ Adds:
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -39,27 +40,20 @@ def jst_today() -> str:
 
 
 def setup_credentials(token: str) -> None:
-    """Configure auth that BOTH git and git-lfs honor, without putting the token
-    in any remote URL (so it never leaks into git's error output / Colab logs).
+    """Auth for git AND git-lfs via an injected HTTP Authorization header (the
+    approach GitHub Actions uses). This is the most reliable for git-lfs: it
+    needs no credential lookup, and the token never appears in a URL (so it can't
+    leak into git's error output / the Colab log).
 
-    Embedding the token in the URL as ``https://<token>@github.com`` makes plain
-    git work but breaks ``git lfs`` (it asks for a password it can't read). A
-    credential-helper entry is used by git and git-lfs alike.
+    Embedding the token in the URL (https://<token>@github.com) makes plain git
+    work but breaks git-lfs, and a credential.helper can be ignored by the lfs
+    smudge subprocess -- hence the header approach.
     """
     if not token:
         return
-    run(["git", "config", "--global", "credential.helper", "store"], secret=token)
-    cred = Path.home() / ".git-credentials"
-    line = f"https://x-access-token:{token}@github.com"
-    kept = []
-    if cred.exists():
-        kept = [ln for ln in cred.read_text(encoding="utf-8").splitlines()
-                if ln.strip() and "@github.com" not in ln]
-    cred.write_text("\n".join(kept + [line]) + "\n", encoding="utf-8")
-    try:
-        os.chmod(cred, 0o600)
-    except OSError:
-        pass
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    run(["git", "config", "--global", "http.https://github.com/.extraheader",
+         f"AUTHORIZATION: basic {basic}"], secret=basic)
 
 
 def run(cmd: list[str], cwd: Path | None = None, secret: str = "") -> None:
