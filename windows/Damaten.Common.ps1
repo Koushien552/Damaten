@@ -22,6 +22,41 @@ function Read-DamatenConfig {
         $cfg | Add-Member -NotePropertyName MachineId -NotePropertyValue $machine
     }
     if (!$cfg.MinPartAgeMinutes) { $cfg | Add-Member -NotePropertyName MinPartAgeMinutes -NotePropertyValue 5 }
+
+    # New-vs-old evaluation defaults. Derived so existing config files keep
+    # working without re-running the installer.
+    if ($cfg.ModelPath) {
+        $modelDir = Split-Path -Parent $cfg.ModelPath
+        if (!$cfg.PrevModelPath) {
+            $modelBase = [System.IO.Path]::GetFileNameWithoutExtension($cfg.ModelPath)
+            $modelExt = [System.IO.Path]::GetExtension($cfg.ModelPath)
+            $prev = Join-Path $modelDir ("{0}.prev{1}" -f $modelBase, $modelExt)
+            $cfg | Add-Member -NotePropertyName PrevModelPath -NotePropertyValue $prev
+        }
+        if (!$cfg.EvalHistoryPath) {
+            $cfg | Add-Member -NotePropertyName EvalHistoryPath -NotePropertyValue (Join-Path $modelDir "eval_history.csv")
+        }
+        if (!$cfg.SprtHistoryPath) {
+            $cfg | Add-Member -NotePropertyName SprtHistoryPath -NotePropertyValue (Join-Path $modelDir "sprt_history.csv")
+        }
+    }
+    if (!$cfg.EvalGames) { $cfg | Add-Member -NotePropertyName EvalGames -NotePropertyValue 100 }
+    if (!$cfg.EvalIters) {
+        $evalIters = if ($cfg.Iters) { [int]$cfg.Iters } else { 1200 }
+        $cfg | Add-Member -NotePropertyName EvalIters -NotePropertyValue $evalIters
+    }
+    if ($null -eq $cfg.EvalEnabled) { $cfg | Add-Member -NotePropertyName EvalEnabled -NotePropertyValue $true }
+    # EvalMode: "fixed" (play EvalGames and report a CI) or "sprt" (play until
+    # the sequential test decides or SprtMaxGames is hit).
+    if (!$cfg.EvalMode) { $cfg | Add-Member -NotePropertyName EvalMode -NotePropertyValue "fixed" }
+
+    # SPRT defaults. H0 = +SprtElo0, H1 = +SprtElo1 Elo for the new model.
+    if ($null -eq $cfg.SprtElo0) { $cfg | Add-Member -NotePropertyName SprtElo0 -NotePropertyValue 0 }
+    if (!$cfg.SprtElo1) { $cfg | Add-Member -NotePropertyName SprtElo1 -NotePropertyValue 30 }
+    if (!$cfg.SprtAlpha) { $cfg | Add-Member -NotePropertyName SprtAlpha -NotePropertyValue 0.05 }
+    if (!$cfg.SprtBeta) { $cfg | Add-Member -NotePropertyName SprtBeta -NotePropertyValue 0.05 }
+    if (!$cfg.SprtBatch) { $cfg | Add-Member -NotePropertyName SprtBatch -NotePropertyValue 8 }
+    if (!$cfg.SprtMaxGames) { $cfg | Add-Member -NotePropertyName SprtMaxGames -NotePropertyValue 400 }
     return $cfg
 }
 

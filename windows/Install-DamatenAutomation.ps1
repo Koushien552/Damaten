@@ -8,6 +8,10 @@ param(
     [int]$Jobs = 4,
     [int]$GamesPerCycle = 100,
     [int]$Iters = 1200,
+    [int]$EvalGames = 100,
+    [int]$EvalIters = 0,
+    [ValidateSet("fixed", "sprt")]
+    [string]$EvalMode = "fixed",
     [string]$GitUserName = "Damaten Windows AI",
     [string]$GitUserEmail = "damaten-windows-ai@local",
     [switch]$SkipTasks
@@ -50,6 +54,19 @@ $config = [ordered]@{
     MachineId = $machine
     MinPartAgeMinutes = 5
     ModelSourceInRepo = "models/hex_model.nn"
+    EvalEnabled = $true
+    EvalMode = $EvalMode
+    EvalGames = $EvalGames
+    EvalIters = $(if ($EvalIters -gt 0) { $EvalIters } else { $Iters })
+    PrevModelPath = Join-Path $RuntimeDir "hex_model.prev.nn"
+    EvalHistoryPath = Join-Path $RuntimeDir "eval_history.csv"
+    SprtHistoryPath = Join-Path $RuntimeDir "sprt_history.csv"
+    SprtElo0 = 0
+    SprtElo1 = 30
+    SprtAlpha = 0.05
+    SprtBeta = 0.05
+    SprtBatch = 8
+    SprtMaxGames = 400
 }
 $config | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath $ConfigPath -Encoding UTF8
 
