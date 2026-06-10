@@ -15,6 +15,7 @@ function Read-DamatenConfig {
     }
 
     $cfg = Get-Content -LiteralPath $Config -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (!$cfg.ConfigPath) { $cfg | Add-Member -NotePropertyName ConfigPath -NotePropertyValue (Resolve-Path -LiteralPath $Config).Path }
     if (!$cfg.RepoPath) { $cfg | Add-Member -NotePropertyName RepoPath -NotePropertyValue $script:DamatenRepoRoot }
     if (!$cfg.Branch) { $cfg | Add-Member -NotePropertyName Branch -NotePropertyValue "main" }
     if (!$cfg.MachineId) {
@@ -57,6 +58,29 @@ function Read-DamatenConfig {
     if (!$cfg.SprtBeta) { $cfg | Add-Member -NotePropertyName SprtBeta -NotePropertyValue 0.05 }
     if (!$cfg.SprtBatch) { $cfg | Add-Member -NotePropertyName SprtBatch -NotePropertyValue 8 }
     if (!$cfg.SprtMaxGames) { $cfg | Add-Member -NotePropertyName SprtMaxGames -NotePropertyValue 400 }
+
+    # Local CNN training defaults (Plan B: replace the Colab GPU trainer with a
+    # local PyTorch-CPU run). Derived so existing configs keep working.
+    if (!$cfg.PythonPath) {
+        $probe = Join-Path $env:LOCALAPPDATA "Programs\Python\Python311\python.exe"
+        $pyDefault = if (Test-Path -LiteralPath $probe) { $probe } else { "python" }
+        $cfg | Add-Member -NotePropertyName PythonPath -NotePropertyValue $pyDefault
+    }
+    if (!$cfg.TrainScript -and $cfg.RepoPath) {
+        $cfg | Add-Member -NotePropertyName TrainScript -NotePropertyValue (Join-Path $cfg.RepoPath "colab\colab_train_cnn.py")
+    }
+    if ($cfg.ModelPath -and !$cfg.CandidateModelPath) {
+        $modelDir = Split-Path -Parent $cfg.ModelPath
+        $modelBase = [System.IO.Path]::GetFileNameWithoutExtension($cfg.ModelPath)
+        $modelExt = [System.IO.Path]::GetExtension($cfg.ModelPath)
+        $cfg | Add-Member -NotePropertyName CandidateModelPath -NotePropertyValue (Join-Path $modelDir ("{0}.candidate{1}" -f $modelBase, $modelExt))
+    }
+    if (!$cfg.TrainLimit) { $cfg | Add-Member -NotePropertyName TrainLimit -NotePropertyValue 300000 }
+    if (!$cfg.TrainEpochs) { $cfg | Add-Member -NotePropertyName TrainEpochs -NotePropertyValue 6 }
+    if (!$cfg.TrainChannels) { $cfg | Add-Member -NotePropertyName TrainChannels -NotePropertyValue 32 }
+    if (!$cfg.TrainBlocks) { $cfg | Add-Member -NotePropertyName TrainBlocks -NotePropertyValue 4 }
+    if ($null -eq $cfg.TrainPauseSelfplay) { $cfg | Add-Member -NotePropertyName TrainPauseSelfplay -NotePropertyValue $true }
+    if (!$cfg.GateIters) { $cfg | Add-Member -NotePropertyName GateIters -NotePropertyValue 400 }
     return $cfg
 }
 
@@ -125,4 +149,63 @@ function Copy-DamatenAtomic {
     $tmp = "$Destination.download"
     Copy-Item -LiteralPath $Source -Destination $tmp -Force
     Move-Item -LiteralPath $tmp -Destination $Destination -Force
+}
+
+# Stop the forever self-play loop and its worker processes so a CPU-heavy local
+# training run can use all cores. Excludes the calling process. Returns $true
+# when no self-play workers remain.
+function Stop-DamatenSelfPlay {
+    param([object]$Config)
+    $self = $PID
+    $sup = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
+        Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -like '*Run-DamatenSelfPlayForever.ps1*' }
+    foreach ($s in $sup) {
+        try { Stop-Process -Id $s.ProcessId -Force -ErrorAction Stop; Write-DamatenLog $Config "selfplay pause: stopped supervisor pid=$($s.ProcessId)" } catch {}
+    }
+    Start-Sleep -Seconds 2
+    $workers = Get-CimInstance Win32_Process -Filter "Name='HexAI.exe'" |
+        Where-Object { $_.CommandLine -like '*selfplay*' }
+    foreach ($w in $workers) { try { Stop-Process -Id $w.ProcessId -Force -ErrorAction Stop } catch {} }
+    Start-Sleep -Seconds 2
+    $remain = @(Get-CimInstance Win32_Process -Filter "Name='HexAI.exe'" | Where-Object { $_.CommandLine -like '*selfplay*' }).Count
+    Write-DamatenLog $Config "selfplay paused: workers remaining=$remain"
+    return ($remain -eq 0)
+}
+
+# Relaunch the forever self-play loop as a detached, hidden process.
+function Start-DamatenSelfPlay {
+    param([object]$Config)
+    $psh = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+    $script = Join-Path $Config.RepoPath "windows\Run-DamatenSelfPlayForever.ps1"
+    $cfgPath = if ($Config.ConfigPath) { $Config.ConfigPath } else { Get-DamatenDefaultConfigPath }
+    Start-Process -FilePath $psh -WindowStyle Hidden -ArgumentList @(
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+        '-File', $script, '-Config', $cfgPath
+    )
+    Start-Sleep -Seconds 8
+    $workers = @(Get-CimInstance Win32_Process -Filter "Name='HexAI.exe'" | Where-Object { $_.CommandLine -like '*selfplay*' }).Count
+    Write-DamatenLog $Config "selfplay resumed: workers=$workers"
+}
+
+# Atomically replace the production model with a new file, backing up the
+# current one to PrevModelPath first. Retries on a transient sharing violation
+# (a self-play worker briefly reading the model at cycle start).
+function Promote-DamatenModel {
+    param(
+        [object]$Config,
+        [string]$Candidate
+    )
+    $model = [string]$Config.ModelPath
+    if (Test-Path -LiteralPath $model) {
+        Copy-DamatenAtomic -Source $model -Destination $Config.PrevModelPath
+    }
+    $staged = "$model.promote"
+    Copy-Item -LiteralPath $Candidate -Destination $staged -Force
+    for ($i = 1; $i -le 5; $i++) {
+        try { Move-Item -LiteralPath $staged -Destination $model -Force -ErrorAction Stop; return $true }
+        catch { Start-Sleep -Seconds 2 }
+    }
+    Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
+    Write-DamatenLog $Config "promote failed: model file busy after retries: $model"
+    return $false
 }

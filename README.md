@@ -15,6 +15,67 @@ Damaten turns the HexAI engine into a Windows/Colab training loop:
 The GitHub repository is the exchange point. Large `.tsv` and `.nn` files are
 tracked with Git LFS.
 
+> **Current mode: local-only training (Plan B).** The self-play data stream
+> outgrew GitHub's free 1 GB LFS quota, so training now runs entirely on the
+> Windows machine with PyTorch on CPU — no data leaves the box. The two daily
+> GitHub jobs (`Damaten Push Results 0830`, `Damaten Pull Model 1200`) are
+> disabled and the Colab path below is kept only for reference. See
+> [Local-only training](#local-only-training-plan-b) before the GitHub sections.
+
+## Local-only training (Plan B)
+
+```text
+self-play (forever)  ->  hex_selfplay.tsv (local)
+                          |
+   windows\Train-DamatenLocal.ps1 (run every few days):
+     1. pause self-play (free the CPU cores)
+     2. train the HEXCNN_V1 conv-ResNet on recent data, warm-started from the
+        current model            (colab\colab_train_cnn.py --device cpu)
+     3. SPRT gate: candidate vs current model
+     4. promote the candidate only if it is measurably stronger
+     5. resume self-play
+```
+
+This replaces the Colab GPU trainer **and** both daily GitHub jobs. The engine,
+self-play, and training all run on one machine; GitHub is optional and only ever
+needs code + the ~1.2 MB model, never the `.tsv` data.
+
+### One-time setup (already done on this machine)
+
+```powershell
+# per-user Python (no admin / no UAC), then CPU PyTorch
+python-3.11.9-amd64.exe /quiet InstallAllUsers=0 PrependPath=1 Include_launcher=0
+python -m pip install numpy torch --index-url https://download.pytorch.org/whl/cpu
+```
+
+### Run a training cycle
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\windows\Train-DamatenLocal.ps1 `
+  -Config .\config\damaten.local.json
+```
+
+It pauses self-play, trains a candidate, runs the SPRT promotion gate, promotes
+on PASS, and resumes self-play. Flags: `-NoPause` (train alongside self-play),
+`-NoPromote` (train a candidate without adopting it), `-Limit` / `-Epochs` /
+`-GateIters`.
+
+Settings in `config/damaten.local.json`:
+
+```text
+PythonPath          path to python.exe that has torch installed
+TrainScript         colab\colab_train_cnn.py (already CPU-capable)
+TrainLimit          most-recent positions to train on (default 300000)
+TrainEpochs         epochs per run (default 6)
+TrainPauseSelfplay  true to free all CPU cores during training
+GateIters           MCTS iters for the SPRT promotion gate (default 400)
+CandidateModelPath  where the freshly trained candidate is written
+```
+
+On a 4-core CPU a run takes roughly 1-3 hours, so run it every few days rather
+than daily. Each run warm-starts from the current model, preserving the lineage.
+A first local run beat the previous Colab-trained model 30-10 (+191 Elo).
+
 ## Repository layout
 
 ```text
