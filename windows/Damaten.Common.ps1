@@ -156,6 +156,14 @@ function Copy-DamatenAtomic {
 # when no self-play workers remain.
 function Stop-DamatenSelfPlay {
     param([object]$Config)
+    # If self-play runs as a scheduled task, disable it first so its daily
+    # watchdog trigger cannot relaunch self-play in the middle of training,
+    # then stop the running instance.
+    $spTask = "Damaten SelfPlay Forever"
+    if (Get-ScheduledTask -TaskName $spTask -ErrorAction SilentlyContinue) {
+        try { Disable-ScheduledTask -TaskName $spTask -ErrorAction Stop | Out-Null } catch {}
+        try { Stop-ScheduledTask -TaskName $spTask -ErrorAction Stop } catch {}
+    }
     $self = $PID
     $sup = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" |
         Where-Object { $_.ProcessId -ne $self -and $_.CommandLine -like '*Run-DamatenSelfPlayForever.ps1*' }
@@ -172,16 +180,26 @@ function Stop-DamatenSelfPlay {
     return ($remain -eq 0)
 }
 
-# Relaunch the forever self-play loop as a detached, hidden process.
+# Resume the forever self-play loop. Prefer the scheduled task (durable: it runs
+# under Task Scheduler and survives the caller exiting); fall back to a detached
+# process only if the task is not registered.
 function Start-DamatenSelfPlay {
     param([object]$Config)
-    $psh = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
-    $script = Join-Path $Config.RepoPath "windows\Run-DamatenSelfPlayForever.ps1"
-    $cfgPath = if ($Config.ConfigPath) { $Config.ConfigPath } else { Get-DamatenDefaultConfigPath }
-    Start-Process -FilePath $psh -WindowStyle Hidden -ArgumentList @(
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
-        '-File', $script, '-Config', $cfgPath
-    )
+    $spTask = "Damaten SelfPlay Forever"
+    if (Get-ScheduledTask -TaskName $spTask -ErrorAction SilentlyContinue) {
+        try { Enable-ScheduledTask -TaskName $spTask -ErrorAction Stop | Out-Null } catch {}
+        try { Start-ScheduledTask -TaskName $spTask -ErrorAction Stop; Write-DamatenLog $Config "selfplay resume: started scheduled task '$spTask'" }
+        catch { Write-DamatenLog $Config "selfplay resume: Start-ScheduledTask failed: $($_.Exception.Message)" }
+    } else {
+        $psh = Join-Path $env:SystemRoot "System32\WindowsPowerShell\v1.0\powershell.exe"
+        $script = Join-Path $Config.RepoPath "windows\Run-DamatenSelfPlayForever.ps1"
+        $cfgPath = if ($Config.ConfigPath) { $Config.ConfigPath } else { Get-DamatenDefaultConfigPath }
+        Start-Process -FilePath $psh -WindowStyle Hidden -ArgumentList @(
+            '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden',
+            '-File', $script, '-Config', $cfgPath
+        )
+        Write-DamatenLog $Config "selfplay resume: launched detached process (no task registered)"
+    }
     Start-Sleep -Seconds 8
     $workers = @(Get-CimInstance Win32_Process -Filter "Name='HexAI.exe'" | Where-Object { $_.CommandLine -like '*selfplay*' }).Count
     Write-DamatenLog $Config "selfplay resumed: workers=$workers"
