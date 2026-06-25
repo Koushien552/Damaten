@@ -86,4 +86,11 @@ try {
 }
 finally {
     if ($paused) { Start-DamatenSelfPlay $cfg }
+    # Refresh the convergence report so it always reflects the latest gate.
+    try {
+        & $py "$PSScriptRoot\..\tools\track_convergence.py" --config $cfg.ConfigPath | Out-Null
+        Write-DamatenLog $cfg "convergence report updated"
+    } catch {
+        Write-DamatenLog $cfg "convergence report update failed: $($_.Exception.Message)"
+    }
 }
