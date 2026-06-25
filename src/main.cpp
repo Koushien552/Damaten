@@ -1981,12 +1981,18 @@ SearchConfig side_config(const Args& args, int n, const std::string& suffix) {
 
 // Engine-vs-engine match for measuring strength. Side A and side B can use
 // different models (--model-a/--model-b, falling back to --model) and different
-// search settings (suffix -a/-b). Colors alternate each game and every game is
-// seeded from --seed so results are reproducible yet varied.
+// search settings (suffix -a/-b). Games are played in color-swapped pairs that
+// share a short random opening (--opening-plies, default 4). The random opening
+// diversifies the games and neutralises Hex's decisive first-player advantage,
+// so a genuine strength gap shows up in the win rate instead of being masked by
+// "whoever plays Black wins". Engine moves themselves stay deterministic
+// (best move, no root noise) so the measurement is low variance, and everything
+// is seeded from --seed so results are reproducible yet varied.
 int run_match(const Args& args) {
     int n = get_int(args, "n", 9);
     int games = get_int(args, "games", 20);
     uint64_t base_seed = static_cast<uint64_t>(get_int(args, "seed", 12345));
+    int opening_plies = get_int(args, "opening-plies", 4);
     auto rules = std::make_shared<Rules>(n);
 
     std::string model_shared = get_string(args, "model", "");
@@ -2001,33 +2007,53 @@ int run_match(const Args& args) {
 
     int a_wins = 0, b_wins = 0;
     int a_black = 0, a_white = 0, b_black = 0, b_white = 0;
-    for (int g = 1; g <= games; ++g) {
-        bool a_is_black = (g % 2 == 1);
-        g_rng = Random(base_seed + static_cast<uint64_t>(g));
-        GameState st(rules);
-        while (!st.is_terminal() && !legal_moves(st).empty()) {
-            bool a_to_move = (st.cur == BLACK) == a_is_black;
-            const SearchConfig& cfg = a_to_move ? cfg_a : cfg_b;
-            const NeuralNet* net = a_to_move ? net_a.get() : net_b.get();
-            SearchResult sr = search_position(st, cfg, net);
-            if (sr.move < 0) break;
-            st = st.apply(sr.move);
+    int pairs = (games + 1) / 2;
+    int played = 0;
+    for (int pr = 0; pr < pairs; ++pr) {
+        // One random opening per pair, replayed with colors swapped so any
+        // residual opening bias cancels between the two games.
+        std::vector<int> opening;
+        Random orng(base_seed * 1000003ull + static_cast<uint64_t>(pr) + 1);
+        {
+            GameState os(rules);
+            for (int k = 0; k < opening_plies; ++k) {
+                std::vector<int> moves = legal_moves(os);
+                if (os.is_terminal() || moves.empty()) break;
+                int pick = moves[orng.uniform_int(0, static_cast<int>(moves.size()) - 1)];
+                opening.push_back(pick);
+                os = os.apply(pick);
+            }
         }
-        int w = st.winner();
-        bool black_won = (w == BLACK);
-        bool a_won = (black_won == a_is_black);
-        if (a_won) {
-            ++a_wins;
-            if (a_is_black) ++a_black; else ++a_white;
-        } else {
-            ++b_wins;
-            if (a_is_black) ++b_white; else ++b_black;
-        }
-        if (verbose) {
-            std::cout << "game " << g << "/" << games
-                      << " A=" << (a_is_black ? "Black" : "White")
-                      << " winner=" << (black_won ? "Black" : "White")
-                      << " -> " << (a_won ? "A" : "B") << "\n";
+        for (int side = 0; side < 2 && played < games; ++side) {
+            ++played;
+            bool a_is_black = (side == 0);
+            g_rng = Random(base_seed + static_cast<uint64_t>(played));
+            GameState st(rules);
+            for (int mv : opening) st = st.apply(mv);
+            while (!st.is_terminal() && !legal_moves(st).empty()) {
+                bool a_to_move = (st.cur == BLACK) == a_is_black;
+                const SearchConfig& cfg = a_to_move ? cfg_a : cfg_b;
+                const NeuralNet* net = a_to_move ? net_a.get() : net_b.get();
+                SearchResult sr = search_position(st, cfg, net);
+                if (sr.move < 0) break;
+                st = st.apply(sr.move);
+            }
+            int w = st.winner();
+            bool black_won = (w == BLACK);
+            bool a_won = (black_won == a_is_black);
+            if (a_won) {
+                ++a_wins;
+                if (a_is_black) ++a_black; else ++a_white;
+            } else {
+                ++b_wins;
+                if (a_is_black) ++b_white; else ++b_black;
+            }
+            if (verbose) {
+                std::cout << "game " << played << "/" << games
+                          << " A=" << (a_is_black ? "Black" : "White")
+                          << " winner=" << (black_won ? "Black" : "White")
+                          << " -> " << (a_won ? "A" : "B") << "\n";
+            }
         }
     }
 
