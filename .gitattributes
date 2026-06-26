@@ -3,3 +3,4 @@
 *.zip filter=lfs diff=lfs merge=lfs -text
 models/** filter=lfs diff=lfs merge=lfs -text
 selfplay/** filter=lfs diff=lfs merge=lfs -text
+models/hex_model.nn -filter -diff -merge -text
