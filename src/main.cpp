@@ -2064,6 +2064,123 @@ int run_match(const Args& args) {
     return 0;
 }
 
+// HTP / GTP-style protocol loop so HexGui (and twogtp-style match tools) can
+// drive the engine over stdin/stdout. Coordinates use move_to_string /
+// move_from_string (column letter + row number; Black connects top-bottom,
+// White left-right), matching the benzene/HexGui convention.
+int run_htp(const Args& args) {
+    int n = get_int(args, "n", 9);
+    auto rules = std::make_shared<Rules>(n);
+    GameState gs(rules);
+    std::vector<std::pair<int, int>> history;   // (move, color) for undo / replay
+    SearchConfig cfg = config_from_args(args, n);
+    auto net = load_model_if_requested(args, n);
+    std::cout.setf(std::ios::unitbuf);           // flush each response (pipe-safe)
+
+    const std::string cmds =
+        "protocol_version\nname\nversion\nlist_commands\nknown_command\n"
+        "boardsize\nclear_board\nplay\ngenmove\nundo\nshowboard\nfinal_score\nquit";
+
+    auto is_known = [&](const std::string& c) {
+        return (cmds + "\n").find(c + "\n") != std::string::npos;
+    };
+    auto parse_color = [](std::string s) -> int {
+        for (auto& ch : s) ch = static_cast<char>(std::tolower((unsigned char)ch));
+        if (s == "b" || s == "black") return BLACK;
+        if (s == "w" || s == "white") return WHITE;
+        return -1;
+    };
+    auto reply = [](const std::string& id, bool ok, const std::string& body) {
+        std::cout << (ok ? '=' : '?') << id;
+        if (!body.empty()) std::cout << ' ' << body;
+        std::cout << "\n\n";
+    };
+
+    std::string line;
+    while (std::getline(std::cin, line)) {
+        if (line.size() >= 3 && (unsigned char)line[0] == 0xEF &&
+            (unsigned char)line[1] == 0xBB && (unsigned char)line[2] == 0xBF)
+            line = line.substr(3);                       // strip UTF-8 BOM
+        if (!line.empty() && line.back() == '\r') line.pop_back();   // strip CR (CRLF)
+        std::size_t h = line.find('#');
+        if (h != std::string::npos) line = line.substr(0, h);
+        std::istringstream iss(line);
+        std::vector<std::string> tok; std::string t;
+        while (iss >> t) tok.push_back(t);
+        if (tok.empty()) continue;
+        std::size_t i = 0; std::string id;
+        if (!tok[0].empty() && std::isdigit((unsigned char)tok[0][0])) { id = tok[0]; i = 1; }
+        if (i >= tok.size()) { reply(id, false, "missing command"); continue; }
+        std::string cmd = tok[i];
+        for (auto& ch : cmd) ch = static_cast<char>(std::tolower((unsigned char)ch));
+        std::vector<std::string> a(tok.begin() + i + 1, tok.end());
+
+        if (cmd == "protocol_version") reply(id, true, "2");
+        else if (cmd == "name") reply(id, true, "Damaten HexAI");
+        else if (cmd == "version") reply(id, true, "1.0");
+        else if (cmd == "list_commands") reply(id, true, cmds);
+        else if (cmd == "known_command") reply(id, true, (!a.empty() && is_known(a[0])) ? "true" : "false");
+        else if (cmd == "quit") { reply(id, true, ""); break; }
+        else if (cmd == "boardsize") {
+            int nn = n;
+            if (!a.empty()) { try { nn = std::stoi(a[0]); } catch (...) { reply(id, false, "bad size"); continue; } }
+            if (nn < 2 || nn > 19) { reply(id, false, "unacceptable size"); continue; }
+            n = nn; rules = std::make_shared<Rules>(n); gs = GameState(rules);
+            history.clear(); cfg = config_from_args(args, n); net = load_model_if_requested(args, n);
+            reply(id, true, "");
+        }
+        else if (cmd == "clear_board") { gs = GameState(rules); history.clear(); reply(id, true, ""); }
+        else if (cmd == "play") {
+            if (a.size() < 2) { reply(id, false, "syntax: play <color> <move>"); continue; }
+            int color = parse_color(a[0]);
+            if (color < 0) { reply(id, false, "bad color"); continue; }
+            std::string mv = a[1];
+            for (auto& ch : mv) ch = static_cast<char>(std::tolower((unsigned char)ch));
+            if (mv == "resign" || mv == "pass") { reply(id, true, ""); continue; }
+            int idx = rules->move_from_string(mv);
+            if (idx < 0 || gs.board[idx] != EMPTY) { reply(id, false, "illegal move"); continue; }
+            gs.cur = color; gs = gs.apply(idx); history.push_back({ idx, color });
+            reply(id, true, "");
+        }
+        else if (cmd == "genmove") {
+            int color = (!a.empty() && parse_color(a[0]) >= 0) ? parse_color(a[0]) : gs.cur;
+            if (gs.is_terminal() || legal_moves(gs).empty()) { reply(id, true, "resign"); continue; }
+            gs.cur = color;
+            SearchResult sr = search_position(gs, cfg, net.get());
+            if (sr.move < 0) { reply(id, true, "resign"); continue; }
+            gs = gs.apply(sr.move); history.push_back({ sr.move, color });
+            reply(id, true, rules->move_to_string(sr.move));
+        }
+        else if (cmd == "undo") {
+            if (history.empty()) { reply(id, false, "cannot undo"); continue; }
+            history.pop_back();
+            GameState g(rules);
+            for (auto& mc : history) { g.cur = mc.second; g = g.apply(mc.first); }
+            gs = g; reply(id, true, "");
+        }
+        else if (cmd == "showboard") {
+            std::ostringstream os; os << "\n";
+            for (int r = 0; r < n; ++r) {
+                os << std::string(r, ' ');
+                os << (r + 1 < 10 ? " " : "") << (r + 1) << ' ';
+                for (int c = 0; c < n; ++c) {
+                    int v = gs.board[r * n + c];
+                    os << (v == BLACK ? 'B' : (v == WHITE ? 'W' : '.')) << ' ';
+                }
+                os << "\n";
+            }
+            reply(id, true, os.str());
+        }
+        else if (cmd == "final_score") {
+            if (gs.is_terminal()) reply(id, true, gs.winner() == BLACK ? "B+" : "W+");
+            else reply(id, true, "0");
+        }
+        else if (cmd == "hexgui-analyze_commands") reply(id, true, "");
+        else reply(id, false, "unknown command");
+    }
+    return 0;
+}
+
 int run_legacy_args(int argc, char* argv[]) {
     int n = std::stoi(argv[1]);
     auto rules = std::make_shared<Rules>(n);
@@ -2142,6 +2259,7 @@ int main(int argc, char* argv[]) {
     if (args.command == "match") return run_match(args);
     if (args.command == "initcnn") return run_initcnn(args);
     if (args.command == "eval") return run_eval(args);
+    if (args.command == "htp" || args.command == "gtp") return run_htp(args);
 
     std::cerr << "unknown command: " << args.command << "\n";
     print_help();
