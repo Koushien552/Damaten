@@ -4,3 +4,10 @@
 models/** filter=lfs diff=lfs merge=lfs -text
 selfplay/** filter=lfs diff=lfs merge=lfs -text
 models/hex_model.nn -filter -diff -merge -text
+
+# Generated WebAssembly assets for GitHub Pages. The HEXCNN model packaged
+# into hexai.data is ASCII text, so without -text git's autocrlf would strip
+# CR bytes and corrupt it (and the .wasm). Never normalize these.
+docs/hexai.data -text -diff
+docs/hexai.wasm -text -diff
+docs/hexai.js -text -diff
