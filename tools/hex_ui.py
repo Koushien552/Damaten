@@ -106,8 +106,8 @@ newGame();
 def load_paths(args):
     exe, model, n = args.exe, args.model, args.n
     cfg_path = args.config
+    here = os.path.dirname(os.path.abspath(__file__))
     if (not exe or not model) and not cfg_path:
-        here = os.path.dirname(os.path.abspath(__file__))
         cand = os.path.join(here, "..", "config", "damaten.local.json")
         if os.path.exists(cand):
             cfg_path = cand
@@ -117,6 +117,16 @@ def load_paths(args):
         exe = exe or cfg.get("ExePath")
         model = model or cfg.get("ModelPath")
         n = n or int(cfg.get("BoardSize", 9))
+    # Same-folder fallback: a self-contained bundle (HexAI.exe + hex_model.nn
+    # sitting next to this script) runs with no config and no arguments.
+    if not exe or not os.path.exists(exe):
+        local = os.path.join(here, "HexAI.exe")
+        if os.path.exists(local):
+            exe = local
+    if not model or not os.path.exists(model):
+        local = os.path.join(here, "hex_model.nn")
+        if os.path.exists(local):
+            model = local
     return exe, model, (n or 9)
 
 
