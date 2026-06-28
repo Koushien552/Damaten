@@ -2239,6 +2239,79 @@ void print_help() {
 
 }  // namespace hexai
 
+#ifdef __EMSCRIPTEN__
+// ---------------------------------------------------------------------------
+// WebAssembly entry points. Compiled only under Emscripten; the native CLI
+// build is unaffected. These wrap the same internals the `move`/`eval` CLI
+// commands use, so the browser engine behaves identically to HexAI.exe.
+//   hex_init(n, "/hex_model.nn")  -> 1 on success (model preloaded into MEMFS)
+//   hex_best_move(board, player, last, iters) -> chosen cell index (or <0)
+//   hex_policy(board, player) -> "value;p0,p1,...,pNN-1" legal-masked softmax
+// ---------------------------------------------------------------------------
+#include <emscripten/emscripten.h>
+using namespace hexai;
+
+namespace {
+    std::shared_ptr<Rules> g_wasm_rules;
+    std::unique_ptr<NeuralNet> g_wasm_net;
+    int g_wasm_n = 9;
+    std::string g_wasm_out;  // return buffer for hex_policy
+}
+
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE
+int hex_init(int n, const char* model_path) {
+    g_wasm_n = n;
+    g_wasm_rules = std::make_shared<Rules>(n);
+    g_wasm_net = load_any_model(model_path ? std::string(model_path) : std::string(), n);
+    return (g_wasm_net && g_wasm_net->is_ready()) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int hex_best_move(const char* board, int player, int last, int iters) {
+    if (!g_wasm_rules) return -3;
+    GameState gs(g_wasm_rules);
+    if (!parse_board_text(board ? std::string(board) : std::string(), g_wasm_rules->nn, gs.board))
+        return -2;
+    gs.cur = player;
+    gs.last_move = last;
+    rebuild_union_find(gs);
+    Args a;
+    if (iters > 0) a.opt["iters"] = std::to_string(iters);
+    SearchConfig cfg = config_from_args(a, g_wasm_n);
+    SearchResult sr = search_position(gs, cfg, g_wasm_net.get());
+    return sr.move;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* hex_policy(const char* board, int player) {
+    g_wasm_out.clear();
+    if (!g_wasm_net || !g_wasm_net->is_ready()) { g_wasm_out = "error;no-model"; return g_wasm_out.c_str(); }
+    GameState gs(g_wasm_rules);
+    if (!parse_board_text(board ? std::string(board) : std::string(), g_wasm_rules->nn, gs.board)) {
+        g_wasm_out = "error;bad-board"; return g_wasm_out.c_str();
+    }
+    const int nn = g_wasm_rules->nn;
+    Eval e = g_wasm_net->evaluate(gs.board, player);
+    // Legal-masked softmax over empty cells (same as the Python /policy bridge).
+    double mx = -1e300;
+    for (int i = 0; i < nn; ++i) if (gs.board[i] == 0 && e.logits[i] > mx) mx = e.logits[i];
+    std::vector<double> p(nn, 0.0);
+    double z = 0.0;
+    for (int i = 0; i < nn; ++i) if (gs.board[i] == 0) { p[i] = std::exp(e.logits[i] - mx); z += p[i]; }
+    if (z <= 0.0) z = 1.0;
+    std::ostringstream os;
+    os << std::setprecision(6) << e.value;
+    for (int i = 0; i < nn; ++i) os << (i == 0 ? ';' : ',') << (p[i] / z);
+    g_wasm_out = os.str();
+    return g_wasm_out.c_str();
+}
+
+}  // extern "C"
+#endif  // __EMSCRIPTEN__
+
+#ifndef __EMSCRIPTEN__
 int main(int argc, char* argv[]) {
     using namespace hexai;
     std::ios::sync_with_stdio(false);
@@ -2265,3 +2338,4 @@ int main(int argc, char* argv[]) {
     print_help();
     return 1;
 }
+#endif  // __EMSCRIPTEN__
