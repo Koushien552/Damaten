@@ -5,6 +5,10 @@ $ErrorActionPreference = "Stop"
 
 $cfg = Read-DamatenConfig $Config
 
+# Run self-play workers below normal priority by default so they use spare CPU
+# without making the machine sluggish (this is a low-power 2-core laptop).
+$workerPriority = if ($cfg.WorkerPriority) { [string]$cfg.WorkerPriority } else { "BelowNormal" }
+
 if (!(Test-Path -LiteralPath $cfg.ExePath)) {
     throw "HexAI.exe not found: $($cfg.ExePath)"
 }
@@ -39,8 +43,10 @@ try {
             }
 
             Start-Job -ScriptBlock {
-                param($exe, $root, $out, $n, $games, $iters, $seed, $model)
+                param($exe, $root, $out, $n, $games, $iters, $seed, $model, $priority)
                 Set-Location -LiteralPath $root
+                # Lower this job's priority; the HexAI.exe child launched via & inherits it.
+                try { (Get-Process -Id $PID).PriorityClass = [System.Diagnostics.ProcessPriorityClass]$priority } catch {}
                 if (Test-Path -LiteralPath $model) {
                     & $exe selfplay --n $n --games $games --iters $iters --out $out --model $model --seed $seed
                 } else {
@@ -49,7 +55,7 @@ try {
                 if ($LASTEXITCODE -ne 0) {
                     throw "selfplay failed with exit code $LASTEXITCODE"
                 }
-            } -ArgumentList $cfg.ExePath, $cfg.RuntimeDir, $out, $cfg.BoardSize, $gamesPerJob, $cfg.Iters, $seed, $cfg.ModelPath
+            } -ArgumentList $cfg.ExePath, $cfg.RuntimeDir, $out, $cfg.BoardSize, $gamesPerJob, $cfg.Iters, $seed, $cfg.ModelPath, $workerPriority
         }
 
         $running | Wait-Job

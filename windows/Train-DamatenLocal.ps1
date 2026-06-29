@@ -44,8 +44,12 @@ try {
 
     # Train the candidate. Warm-start from the current model so each run
     # continues the lineage (same as the previous Colab loop did).
-    $env:OMP_NUM_THREADS = [string][Environment]::ProcessorCount
-    $env:MKL_NUM_THREADS = [string][Environment]::ProcessorCount
+    $trainThreads = if ($cfg.TrainThreads) { [int]$cfg.TrainThreads } else { [Environment]::ProcessorCount }
+    $env:OMP_NUM_THREADS = [string]$trainThreads
+    $env:MKL_NUM_THREADS = [string]$trainThreads
+    # Keep the nightly train (and its SPRT gate) from pegging this low-power CPU;
+    # the child python/HexAI processes inherit this priority.
+    try { (Get-Process -Id $PID).PriorityClass = 'BelowNormal' } catch {}
     $trainArgs = @(
         $trainScript, "--n", $n,
         "--data", $cfg.DataPath, "--recent", "--limit", $limit,
