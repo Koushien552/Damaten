@@ -37,7 +37,7 @@ const BLUE=1,RED=2,DR=[-1,-1,0,0,1,1],DC=[0,1,-1,1,-1,0];
 const svg=document.getElementById("board"),statusEl=document.getElementById("status"),movesEl=document.getElementById("moves");
 const sideSel=document.getElementById("side"),itEl=document.getElementById("iters"),itv=document.getElementById("itersv");
 const polChk=document.getElementById("polchk"),valEl=document.getElementById("val"),splash=document.getElementById("splash");
-let board,history,winner,winSet,human,engine,busy,pol=null,engineReady=false;
+let board,history,winner,winSet,human,engine,busy,pol=null,engineReady=false,gen=0;
 
 // --- WASM engine over a Web Worker (keeps MCTS off the UI thread) ---
 const worker=new Worker("worker.js");
@@ -72,8 +72,9 @@ function place(i,col){board[i]=col;history.push(i);movesEl.textContent="手数 "
 async function fetchPolicy(){
  if(!polChk.checked){pol=null;valEl.textContent="";render();return;}
  if(winner||busy||!engineReady)return;
- const side=(history.length%2===0)?BLUE:RED;
+ const g=gen,side=(history.length%2===0)?BLUE:RED;
  const d=await rpc({type:"policy",board:board.join(""),player:side});
+ if(g!==gen)return;
  if(!d.data||d.data.indexOf(";")<0||d.data.indexOf("error")===0){pol=null;render();return;}
  const semi=d.data.indexOf(";"),value=parseFloat(d.data.slice(0,semi));
  const probs=d.data.slice(semi+1).split(",").map(Number);
@@ -83,18 +84,19 @@ async function fetchPolicy(){
  render();
 }
 function checkEnd(col){const w=win(col);if(w){winner=col;winSet=w;setStatus((col===human?"あなた":"AI")+"の勝ち！("+(col===BLUE?"青":"赤")+")");render();return true;}return false;}
-async function engineMove(last){if(!engineReady)return;busy=true;setStatus("AI思考中…");render();
+async function engineMove(last){if(!engineReady||busy)return;const g=gen;busy=true;setStatus("AI思考中…");render();
  const d=await rpc({type:"move",board:board.join(""),player:engine,last:last,iters:+itEl.value});
+ if(g!==gen)return;  // 新規対局/待ったが入った: 古い思考結果は破棄(AIの二重着手を防ぐ)
  if(d.move<0){setStatus("エラー: 着手生成に失敗(code "+d.move+")");busy=false;return;}
  place(d.move,engine);if(!checkEnd(engine)){setStatus("手番: あなた");}busy=false;render();fetchPolicy();}
 function click(r,c){if(busy||winner||!engineReady)return;const i=ix(r,c);if(board[i])return;
  const side=(history.length%2===0)?BLUE:RED;if(side!==human)return;
  place(i,human);if(checkEnd(human))return;engineMove(i);}
-function newGame(){human=+sideSel.value;engine=human===BLUE?RED:BLUE;board=new Array(N*N).fill(0);history=[];winner=0;winSet=null;busy=false;
+function newGame(){gen++;human=+sideSel.value;engine=human===BLUE?RED:BLUE;board=new Array(N*N).fill(0);history=[];winner=0;winSet=null;busy=false;
  movesEl.textContent="手数 0";render();
  if(!engineReady){setStatus("エンジン読み込み中…");return;}
  setStatus("手番: あなた");if(engine===BLUE)engineMove(-1);else fetchPolicy();}
-function undo(){if(busy||!history.length||!engineReady)return;winner=0;winSet=null;
+function undo(){if(busy||!history.length||!engineReady)return;gen++;winner=0;winSet=null;
  const k=(engine===BLUE&&history.length===1)?1:Math.min(2,history.length);
  for(let j=0;j<k;j++){board[history.pop()]=0;}movesEl.textContent="手数 "+history.length;
  const side=(history.length%2===0)?BLUE:RED;setStatus("手番: あなた");pol=null;render();
