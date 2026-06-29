@@ -30,9 +30,6 @@
   <svg id="board" viewBox="0 0 520 330" role="img" aria-label="Hex board"></svg>
   <div id="splash">エンジンを読み込み中…<br><span class="muted">(初回のみ。モデルを読み込んでいます)</span></div>
 </div>
-<p class="muted"><b style="color:#185FA5">● 青</b> 上下をつなぐ ／ <b style="color:#E24B4A">● 赤</b> 左右をつなぐ。空マスをクリックで着手。<br>
-<b>方策ヒートマップ</b>: 手番側から見た方策ネットの確率（合法手のソフトマックス, 探索なし）。濃いほど高確率、数字は%。「評価」は手番側の推定勝率。<br>
-<span class="muted">思考はすべてあなたのブラウザ内(WebAssembly)で実行されます。サーバ送信はありません。</span></p>
 <script>
 const N=9, s=20, NS="http://www.w3.org/2000/svg";
 const colSp=Math.sqrt(3)*s,rowSp=1.5*s,shift=colSp/2,X0=30,Y0=34;
