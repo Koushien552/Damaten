@@ -34,7 +34,28 @@ if ($LASTEXITCODE -ne 0) {
 }
 $warmStart = Test-Path -LiteralPath $model
 
-Write-DamatenLog $cfg ("local train start: limit={0} epochs={1} gateIters={2} warm-start={3}" -f $limit, $epochs, $gateIters, $warmStart)
+# Pick the warm-start source by architecture. The trainer keeps the shape of
+# whatever --model-in it loads (ignoring --channels/--blocks), so warm-starting
+# from a mismatched net would silently train the old shape forever. When the
+# production model doesn't match the configured target (e.g. growing 32x4 ->
+# 64x6), continue last night's candidate lineage instead so the bigger net
+# improves cumulatively until it can pass the gate; with no matching file,
+# train from scratch.
+function Get-HexCnnArch([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path) -or !(Test-Path -LiteralPath $Path)) { return $null }
+    $f = (Get-Content -LiteralPath $Path -TotalCount 1) -split '\s+'
+    if ($f.Count -lt 4 -or $f[0] -ne "HEXCNN_V1") { return $null }
+    return ,@([int]$f[2], [int]$f[3])
+}
+$wantC = [int]$cfg.TrainChannels
+$wantB = [int]$cfg.TrainBlocks
+$warmSrc = $null
+foreach ($src in @($model, $cand)) {
+    $arch = Get-HexCnnArch $src
+    if ($arch -and $arch[0] -eq $wantC -and $arch[1] -eq $wantB) { $warmSrc = $src; break }
+}
+
+Write-DamatenLog $cfg ("local train start: limit={0} epochs={1} gateIters={2} target={3}ch x {4}blk warm-start={5}" -f $limit, $epochs, $gateIters, $wantC, $wantB, $(if ($warmSrc) { $warmSrc } else { "(scratch)" }))
 
 $paused = $false
 try {
@@ -58,7 +79,7 @@ try {
         "--channels", [int]$cfg.TrainChannels, "--blocks", [int]$cfg.TrainBlocks,
         "--device", "cpu"
     )
-    if ($warmStart) { $trainArgs += @("--model-in", $model) }
+    if ($warmSrc) { $trainArgs += @("--model-in", $warmSrc) }
     & $py @trainArgs
     if ($LASTEXITCODE -ne 0) { throw "training failed: exit $LASTEXITCODE" }
     if (!(Test-Path -LiteralPath $cand)) { throw "training produced no candidate: $cand" }
