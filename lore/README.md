@@ -8,81 +8,39 @@
 
 ## 構成
 
-Part 1〜35 および付録 A まで確定済み。
+**全 8 巻＋付録 A。** 設定はすべてこの 8 巻に収録されている。
 
-### 第 1 部：生命体系（Part 1〜9）
-
-| Part | 内容 | ファイル |
+| 巻 | 内容 | ファイル |
 | --- | --- | --- |
-| 1 | セラ世界の基本概念・生命体系 | [part01-basic-concepts.md](sera/part01-basic-concepts.md) |
-| 2 | セラウイルス完全設定 | [part02-sera-virus.md](sera/part02-sera-virus.md) |
-| 3 | セラ細胞完全設定 | [part03-sera-cell.md](sera/part03-sera-cell.md) |
-| 4 | セラ身体構造大全 | [part04-body-structure.md](sera/part04-body-structure.md) |
-| 5 | セラ進化階級体系 | [part05-evolution-tiers.md](sera/part05-evolution-tiers.md) |
-| 6 | セラ繁殖・生成システム大全 | [part06-reproduction.md](sera/part06-reproduction.md) |
-| 7 | セラ情報ネットワーク・意識共有体系 | [part07-information-network.md](sera/part07-information-network.md) |
-| 8 | セラ擬態・形態変化体系 | [part08-mimicry-morphs.md](sera/part08-mimicry-morphs.md) |
-| 9 | セラ化人間完全設定 | [part09-serafied-humans.md](sera/part09-serafied-humans.md) |
-
-### 第 2 部：文明と世界（Part 10〜20）
-
-| Part | 内容 | ファイル |
-| --- | --- | --- |
-| 10 | セラ文明・社会構造大全 | [part10-civilization-society.md](sera/part10-civilization-society.md) |
-| 11 | セラ物質・セラ環境化体系 | [part11-sera-matter.md](sera/part11-sera-matter.md) |
-| 12 | セラ生命能力体系 | [part12-abilities.md](sera/part12-abilities.md) |
-| 13 | セラ進化体系・存在階梯 | [part13-evolution-ladder.md](sera/part13-evolution-ladder.md) |
-| 14 | セラ繁殖・生成体系 | [part14-reproduction-system.md](sera/part14-reproduction-system.md) |
-| 15 | セラ形態・種族変化体系 | [part15-species-morphs.md](sera/part15-species-morphs.md) |
-| 16 | セラ文明・生活・文化体系 | [part16-daily-life-culture.md](sera/part16-daily-life-culture.md) |
-| 17 | セラ文明・技術・科学体系 | [part17-technology-science.md](sera/part17-technology-science.md) |
-| 18 | セラ心理・精神・人格体系 | [part18-psychology.md](sera/part18-psychology.md) |
-| 19 | セラ言語・会話・情報伝達体系 | [part19-language.md](sera/part19-language.md) |
-| 20 | セラ世界・地理・環境体系 | [part20-geography-environment.md](sera/part20-geography-environment.md) |
-
-### 第 3 部：体系の総括と未来（Part 21〜30）
-
-| Part | 内容 | ファイル |
-| --- | --- | --- |
-| 21 | セラ進化・階級・成長体系 | [part21-growth-classes.md](sera/part21-growth-classes.md) |
-| 22 | セラ物質・セラ器官・生体構造体系 | [part22-organs-biology.md](sera/part22-organs-biology.md) |
-| 23 | セラ能力体系・特殊能力一覧 | [part23-ability-catalog.md](sera/part23-ability-catalog.md) |
-| 24 | セラ歴史・文明発展・時代区分体系 | [part24-history-eras.md](sera/part24-history-eras.md) |
-| 25 | セラ社会制度・統治・共同体体系 | [part25-social-institutions.md](sera/part25-social-institutions.md) |
-| 26 | セラ文化・芸術・娯楽体系 | [part26-arts-entertainment.md](sera/part26-arts-entertainment.md) |
-| 27 | セラ科学・技術・研究体系 | [part27-science-research.md](sera/part27-science-research.md) |
-| 28 | セラ世界環境・生態系・セラ物質化した惑星体系 | [part28-planetary-ecosystem.md](sera/part28-planetary-ecosystem.md) |
-| 29 | セラ生命進化・未来形態・究極進化体系 | [part29-future-evolution.md](sera/part29-future-evolution.md) |
-| 30 | セラ世界の未来・究極理念・終着点 | [part30-ultimate-future.md](sera/part30-ultimate-future.md) |
-
-### 第 4 部：起源・同意・愛・不死（Part 31〜）
-
-| Part | 内容 | ファイル |
-| --- | --- | --- |
-| 31 | セラ起源・円環構造（がん細胞・昇華・美の追求） | [part31-origin.md](sera/part31-origin.md) |
-| 32 | 原初の寂しさ・人間世界・同意 | [part32-consent-and-humanity.md](sera/part32-consent-and-humanity.md) |
-| 33 | セラ人・女王セラ細胞・格の階梯・ルミナス | [part33-hierarchy-and-queen-cell.md](sera/part33-hierarchy-and-queen-cell.md) |
-| 34 | 愛・仲間・恋 | [part34-love-and-bonds.md](sera/part34-love-and-bonds.md) |
-| 35 | 不死・老い・同化 | [part35-immortality-and-assimilation.md](sera/part35-immortality-and-assimilation.md) |
-
-### 付録
-
-| 付録 | 内容 | ファイル |
-| --- | --- | --- |
-| A | 同化進化による種族多様化システム（種族比率設定） | [appendix-a-assimilation-ratios.md](sera/appendix-a-assimilation-ratios.md) |
+| **第 1 巻** | 基礎・生命体系（セラとは何か／セラウイルス／セラ細胞） | [vol1-life-system.md](sera/vol1-life-system.md) |
+| **第 2 巻** | 身体・器官・能力・形態（情報核／スパイク／髪／瞳／擬態／種族形態） | [vol2-body-and-abilities.md](sera/vol2-body-and-abilities.md) |
+| **第 3 巻** | 進化・階級・格（階梯／女王細胞／セラフィム／ルミナス／呼称） | [vol3-evolution-and-hierarchy.md](sera/vol3-evolution-and-hierarchy.md) |
+| **第 4 巻** | 繁殖・生成・不死（スパイク生成／女王出産／同化／蘇生／根拠のない恐怖） | [vol4-reproduction-and-immortality.md](sera/vol4-reproduction-and-immortality.md) |
+| **第 5 巻** | 情報・心・言語（情報ネットワーク／心理／会話） | [vol5-information-mind-language.md](sera/vol5-information-mind-language.md) |
+| **第 6 巻** | **起源・愛・同意・セラ化人間**（本体系の中核） | [vol6-origin-love-consent.md](sera/vol6-origin-love-consent.md) |
+| **第 7 巻** | 文明・社会・生活・文化・科学 | [vol7-civilization.md](sera/vol7-civilization.md) |
+| **第 8 巻** | 世界・環境・歴史・未来（セラ物質／地球／七つの時代／永遠成長時代） | [vol8-world-history-future.md](sera/vol8-world-history-future.md) |
+| **付録 A** | 同化進化による種族多様化システム（種族比率） | [appendix-a-assimilation-ratios.md](sera/appendix-a-assimilation-ratios.md) |
 
 ### 作業用資料（非キャノン）
 
 | 内容 | ファイル |
 | --- | --- |
-| Part 横断の重複・記述の揺れ・要決定事項の整理 | [consistency-notes.md](sera/consistency-notes.md) |
+| 横断の重複・記述の揺れ・要決定事項の整理 | [consistency-notes.md](sera/consistency-notes.md) |
+
+### 旧 Part 版（原本・参照専用）
+
+`sera/archive/` に、統合前の Part 1〜35 と付録 A をそのまま保存している。
+
+**キャノンは第 1〜8 巻である。** archive は履歴と照合のための参照専用であり、
+記述が食い違った場合は必ず巻版が優先される。
 
 ---
 
 ## 全体を貫く不変ルール
 
-多数の Part が繰り返し明記している核となる規則。
-1 箇所だけ変更すると設定全体が壊れるため、変更時は必ず関連 Part を横断確認する。
+全巻が繰り返し明記している核となる規則。
+1 箇所だけ変更すると設定全体が壊れるため、変更時は必ず関連する巻を横断確認する。
 
 1. **セラウイルス単体はコピー不可** — 増える存在ではなく、始める存在
 2. **増殖・生成能力はセラ細胞以降で発達する**
@@ -144,7 +102,7 @@ Part 1〜35 および付録 A まで確定済み。
 
 ## 画像生成の共通方針
 
-全 Part に共通する描写要件。
+全巻に共通する描写要件。
 
 - **必須**：アニメ風／可愛い・美しいキャラクターデザイン／商業作品級の完成度／
   滑らかな線と塗り／セルシェーディングまたはソフトシェーディング／人型維持
@@ -152,13 +110,14 @@ Part 1〜35 および付録 A まで確定済み。
 - **禁止**：グロテスクな怪物化／人型喪失／全身粘液化／セラ要素の消失／
   ホラー的・恐怖的表現／暗いディストピア表現
 - **原則**：セラは常に可愛く優しく描く。**恐ろしさは内容から来るのであって、絵から来るのではない**
-  （Part 32）。セラを悪役として造形してはならない
+  （第 6 巻）。セラを悪役として造形してはならない
 
 ## 運用ルール
 
 - **確定した設定は書き換えない。** 変更が必要な場合は、どの項目をどう改訂したかを
   コミットメッセージに明記し、改訂であることが履歴から追えるようにする。
-- **各 Part の末尾には「確定事項まとめ」を置く。** 参照時に要点だけを拾えるようにする。
-- **未確定事項は本文に混ぜない。** 検討中の案は Part 内の「未確定事項」節、
-  または `consistency-notes.md` に分けて書き、確定していないことが読み手に分かる状態にする。
+- **各巻の末尾には「確定事項まとめ」を置く。** 参照時に要点だけを拾えるようにする。
+- **未確定事項は本文に混ぜない。** 検討中の案は `consistency-notes.md` に分けて書き、
+  確定していないことが読み手に分かる状態にする。
+- **archive は書き換えない。** 統合前の原本として凍結する。
 - **画像生成の方針も設定の一部として扱う。** デザインの一貫性は世界観の一貫性そのもの。
