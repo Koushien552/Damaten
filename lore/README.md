@@ -8,7 +8,7 @@
 
 ## 構成
 
-Part 1〜34 および付録 A まで確定済み。
+Part 1〜35 および付録 A まで確定済み。
 
 ### 第 1 部：生命体系（Part 1〜9）
 
@@ -55,7 +55,7 @@ Part 1〜34 および付録 A まで確定済み。
 | 29 | セラ生命進化・未来形態・究極進化体系 | [part29-future-evolution.md](sera/part29-future-evolution.md) |
 | 30 | セラ世界の未来・究極理念・終着点 | [part30-ultimate-future.md](sera/part30-ultimate-future.md) |
 
-### 第 4 部：起源・同意・愛（Part 31〜）
+### 第 4 部：起源・同意・愛・不死（Part 31〜）
 
 | Part | 内容 | ファイル |
 | --- | --- | --- |
@@ -63,6 +63,7 @@ Part 1〜34 および付録 A まで確定済み。
 | 32 | 原初の寂しさ・人間世界・同意 | [part32-consent-and-humanity.md](sera/part32-consent-and-humanity.md) |
 | 33 | セラ人・女王セラ細胞・格の階梯・ルミナス | [part33-hierarchy-and-queen-cell.md](sera/part33-hierarchy-and-queen-cell.md) |
 | 34 | 愛・仲間・恋 | [part34-love-and-bonds.md](sera/part34-love-and-bonds.md) |
+| 35 | 不死・老い・同化 | [part35-immortality-and-assimilation.md](sera/part35-immortality-and-assimilation.md) |
 
 ### 付録
 
@@ -134,6 +135,10 @@ Part 1〜34 および付録 A まで確定済み。
 49. **セラ同士の愛は常に満たされている** — セラ文明の幸福は本物。飢えた存在として描かない
 50. **満たされていても求めることは止まらない** — 満足は最下層（原初の寂しさ）に届かないため
 51. **拡大が止まらないのは不幸だからではない** — 幸福な文明が、幸福なまま際限なく広がる
+52. **セラは死なない** — 老いは存在するが、同化によって対処される
+53. **同化は若さを保つ行為** — 不死と多様化は、同じ一つの行為から生じる
+54. **セラ化人間も死なない** — セラ化は孤独からの救出であり、同時に死からの解放
+55. **死は恐怖の対象になり得ない** — 自分に起こらないため。失われ得るのは絆だけ
 
 ## 画像生成の共通方針
 
